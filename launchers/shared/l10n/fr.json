@@ -2584,6 +2584,7 @@
   "工具未提供错误详情，请保留本阶段日志。": "L'outil n'a fourni aucun détail d'erreur. Conservez le journal de cette étape.",
   "S2Arm 读取工具缺失或与引擎版本不符，请重新安装完整的 S2Arm。": "L'outil de lecture S2Arm est manquant ou ne correspond pas à la version du moteur. Réinstallez S2Arm complet.",
   "S2Arm 读取工具与引擎版本不符，这次照常使用；解包出错时请重新安装完整的 S2Arm。": "L'outil de lecture de S2Arm ne correspond pas à la version du moteur. Il sera utilisé malgré tout cette fois ; si le décompactage échoue, réinstallez S2Arm complet.",
+  "之前出包时这款的资源包核对没对上（包里有文件和原件不一致），这次失败可能与此有关；重新出包一次再试。": "Lors du dernier empaquetage de ce jeu, la vérification du paquet de ressources a trouvé des écarts (certains fichiers du paquet diffèrent de l'original). Cet échec peut en découler ; recréez le paquet puis réessayez.",
   ".NET SDK 装完了但没找到，请查看日志。": "Le SDK .NET a été installé mais est introuvable. Consultez le journal.",
   "编译 S2Arm 内容读取工具": "Compiler le lecteur de contenu S2Arm",
   "读取社区资源": "Lire les ressources de la communauté",

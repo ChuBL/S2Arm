@@ -6168,6 +6168,10 @@
   "en": "The S2Arm reader tool doesn't match the engine version. It will be used anyway this time; if unpacking fails, reinstall the complete S2Arm."
  },
  {
+  "source": "之前出包时这款的资源包核对没对上（包里有文件和原件不一致），这次失败可能与此有关；重新出包一次再试。",
+  "en": "When this game was last packaged, the resource pack check found a mismatch (some files in the pack differ from the source). This failure may be related; package it again and retry."
+ },
+ {
   "source": ".NET SDK 装完了但没找到，请查看日志。",
   "en": "The .NET SDK was installed but cannot be found. See the log."
  },
