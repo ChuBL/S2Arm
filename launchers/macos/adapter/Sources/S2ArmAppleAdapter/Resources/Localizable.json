@@ -6164,6 +6164,10 @@
   "en": "The S2Arm reader tool is missing or does not match the engine version. Reinstall the full S2Arm."
  },
  {
+  "source": "S2Arm 读取工具与引擎版本不符，这次照常使用；解包出错时请重新安装完整的 S2Arm。",
+  "en": "The S2Arm reader tool doesn't match the engine version. It will be used anyway this time; if unpacking fails, reinstall the complete S2Arm."
+ },
+ {
   "source": ".NET SDK 装完了但没找到，请查看日志。",
   "en": "The .NET SDK was installed but cannot be found. See the log."
  },
@@ -9252,8 +9256,8 @@
   "en": ".NET 10 SDK not found: {0}"
  },
  {
-  "source": "这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响），再出包。",
-  "en": "This S2Arm isn't fully installed: two parts of the program are from different versions (usually an in-app update failed midway and didn't roll back cleanly). Download the latest installer from the release page and install over it (the library, saves and keys are stored elsewhere and won't be affected), then build again."
+  "source": "这份 S2Arm 没装完整：程序的两部分来自不同版本（多半是应用内更新中途失败、回滚没退干净）。这次照常出包；出包失败或游戏起不来时，请从发布页下载最新的安装包，覆盖安装一次（游戏库、存档、密钥都在别处，不受影响）。",
+  "en": "This S2Arm isn't fully installed: two parts of the program are from different versions (usually an in-app update failed midway and didn't roll back cleanly). Packaging continues anyway; if packaging fails or the game won't start, download the latest installer from the release page and install over it (your library, saves and keys are stored elsewhere and are not affected)."
  },
  {
   "source": "【黄】原始程序没存下（以后升级要回原件）：{0}",
