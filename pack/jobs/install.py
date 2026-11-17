@@ -2788,6 +2788,8 @@ def other_device_current(c, want):
 def update_prepare(c):
     """「更新 iPhone 上的 S2Arm」的电脑侧准备，不连手机（新版启动器首次启动时后台调，接着手机连上再走 installUpdate 装机）：
     各台手机记录里、游戏库里还在的款，按本引擎核一遍 iPhone 程序（改写产物）、补可读瓦片版着色器（rewrite_refresh.refresh_ios，结果记进各款 game.json）。
+    通用壳开关开着（program_pack.enabled）时，同一把程序件锁里再按本版出好这款的未签名程序包（program_pack.build，按键缓存：没变就不出）：
+    「更新 S2Arm」只装壳不推各款，之后玩家点「推到 iPhone」时这一步已经做好，只剩签名和推送。不在这里签名（Mac 签名要碰钥匙串，不在后台做）。
     之后装机时 refresh_ios 认出已是本版、直接跳过，装机只剩组容器、签名、装。
     和出包并发安全：每款单独拿这款的程序件锁（ipa.program_locks），做完就放，不长时间挡住那款的出包交付；本进程降优先级（子进程跟着），让出包和游戏先跑。
     → {prepared: 准备了哪几款, updated: 其中实际改了的}"""
@@ -2800,8 +2802,9 @@ def update_prepare(c):
     have = {g["id"].upper() for g in c.catalog()["games"]}
     games = sorted({str(g).upper() for _, rec in layout.devices(c) if isinstance(rec, dict) for g in (rec.get("games") or {}) if str(g).upper() in have})
     c.begin("准备更新 iPhone 上的 S2Arm", 1, 1)
-    updated = []
-    done = []
+    import program_pack
+    shell_on = program_pack.enabled(c)
+    updated, done, built = [], [], []
     for g in games:
         # 前台装机类作业在跑（拿着手机锁）：不再拿程序锁跟它抢（11-17 #1450：后台降到最低优先级，前台排在它后面就是倒置）——停下，剩下的前台自己做
         with c.idle("phone") as free:
@@ -2811,8 +2814,14 @@ def update_prepare(c):
             break
         with packer.program_locks(c, [g]):
             updated += refresh_ios(c, [g])
+            if shell_on:
+                try:
+                    program_pack.build(c, g)
+                    built.append(g)
+                except (Failure, OSError, subprocess.SubprocessError) as e:   # 一款出不了不挡别的：推这款时前台照常再出一次、照实报错
+                    trace(c, f"准备更新：{g} 的程序包没出成，推到 iPhone 时再出：{str(e)[:200]}")
         done.append(g)
-    return dict(prepared=done, updated=sorted(set(updated)))
+    return dict(prepared=done, updated=sorted(set(updated)), **({"programs": built} if shell_on else {}))
 
 
 def update_phone(c):

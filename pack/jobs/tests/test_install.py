@@ -2806,6 +2806,45 @@ class UpdatePrepareTests(unittest.TestCase):
         self.assertEqual(calls, [([self.A], ["program-" + self.A]), ([self.B], ["program-" + self.B])])
         self.assertEqual(r, {"prepared": [self.A, self.B], "updated": [self.B]})
 
+    def _shell_run(self, on, build):
+        """通用壳开关 on / off 下跑一次准备更新：两款都在手机记录与游戏库里；refresh_ios 不改东西；build 记下调用时持有的锁"""
+        import contextlib, rewrite_refresh, program_pack
+        with tempfile.TemporaryDirectory() as t:
+            lib = Path(t); (lib / "devices").mkdir()
+            (lib / "devices/UDID1.json").write_text(json.dumps({"games": {self.A: {}, self.B: {}}}))
+            held = []
+            @contextlib.contextmanager
+            def lock(name, wait=None):
+                held.append(name); yield; held.remove(name)
+            c = jobcase.fake_context(lib.parent, library=lib, catalog=lambda: {"games": [{"id": self.A}, {"id": self.B}]}, begin=lambda *a: None, lock=lock)
+            calls = []
+            def fake_build(cc, g, **kw):
+                calls.append((g, list(held))); return build(g)
+            with um.patch.object(rewrite_refresh, "refresh_ios", lambda cc, games: []), um.patch.object(program_pack, "enabled", lambda cc: on), \
+                    um.patch.object(program_pack, "build", fake_build), um.patch.object(install, "phone_for", lambda cc: (_ for _ in ()).throw(AssertionError("准备段不该找手机"))):
+                return install.update_prepare(c), calls
+
+    def test_shell_on_builds_each_program_in_its_lock(self):
+        # 通用壳开着：每款在自己的程序件锁里出好未签名程序包（推到 iPhone 时只剩签名推送）；结果列出出好的
+        r, calls = self._shell_run(True, lambda g: Path("/pkg") / g)
+        self.assertEqual(calls, [(self.A, ["program-" + self.A]), (self.B, ["program-" + self.B])])
+        self.assertEqual(r, {"prepared": [self.A, self.B], "updated": [], "programs": [self.A, self.B]})
+
+    def test_shell_on_one_build_failure_does_not_stop_others(self):
+        def build(g):
+            if g == self.A:
+                raise Failure("出不了", code="job_failed")
+            return Path("/pkg") / g
+        r, calls = self._shell_run(True, build)
+        self.assertEqual([g for g, _ in calls], [self.A, self.B])
+        self.assertEqual(r, {"prepared": [self.A, self.B], "updated": [], "programs": [self.B]})
+
+    def test_shell_off_does_not_build(self):
+        # 开关关着（0.6.0 前缺省）：行为同原来——不出程序包，结果里没有 programs
+        r, calls = self._shell_run(False, lambda g: Path("/pkg") / g)
+        self.assertEqual(calls, [])
+        self.assertEqual(r, {"prepared": [self.A, self.B], "updated": []})
+
     def test_stops_when_foreground_install_holds_phone_lock(self):
         # 11-17 #1450：前台装机类作业拿着手机锁时，后台准备更新不再拿程序锁跟它抢——做完手上这款就停，剩下的前台按正常优先级做
         import contextlib, rewrite_refresh
