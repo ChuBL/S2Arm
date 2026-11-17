@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 S2Arm contributors
-# 门禁只看：graphics/tools/direct/dsh/* graphics/tools/direct/tests/t_meshstage.py graphics/tools/direct/tests/dshfn.py graphics/tools/direct/tests/dsh_cmp/*
+# 门禁只看：graphics/tools/direct/dsh/* graphics/tools/direct/dsh/batch/* translator/dsh_batch.py graphics/tools/direct/tests/t_meshstage.py graphics/tools/direct/tests/dshfn.py graphics/tools/direct/tests/dsh_cmp/*
 # NVN2 任务 / 网格包装单测（graphics/tools/direct/tests/t_meshstage.py；要 Xcode 的 metal 编译器）：bash tests/meshstage_test.sh
 set -eu
 R=$(cd "$(dirname "$0")/.." && pwd)

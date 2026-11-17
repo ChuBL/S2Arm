@@ -419,19 +419,20 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         var srcB = have["_b.metal"]; var plain = have.GetValueOrDefault("_b.plain.metal");
         Defer[key] = plain;   // 库随它那一批编（UnityFlush）；编不过时退回逐键、再不行去掉额外入口
         MAC.Put(key + "_b.metal", U8.GetBytes(srcB));
-        return (key, "ok", "", Variants(key, refl));
+        return (key, "ok", "", Variants(key, refl, srcB));
     }
     static bool PyIn(string x, object c) => c switch { string s => s.Contains(x, StringComparison.Ordinal), PyDict d => d.ContainsKey(x), System.Collections.IList l => l.Cast<object>().Any(e => e is string es && es == x), _ => false };   // Python 的 x in c
     static bool Truthy(object v) => v switch { null => false, bool b => b, string s => s.Length > 0, PyNum n => n.Text != "0" && n.Text != "0.0", long l => l != 0, int i => i != 0, _ => true };
 
-    static PyDict Variants(string key, PyDict refl)
+    static PyDict Variants(string key, PyDict refl, string srcB)
     {
         var v = VarSrc.GetValueOrDefault(key) ?? new();
-        foreach (var sfx in new[] { "_bv", "_ft", "_bf" }) { MAC.Drop(key + sfx + ".metallib"); IOS?.Drop(key + sfx + ".metallib"); }
-        refl.Remove("vin"); refl.Remove("fetch");
+        foreach (var sfx in new[] { "_bv", "_ft", "_bf", "_bme" }) { MAC.Drop(key + sfx + ".metallib"); IOS?.Drop(key + sfx + ".metallib"); }
+        refl.Remove("vin"); refl.Remove("fetch"); refl.Remove("mesh_emu");
         var st = (string)refl["stage"];
         if (st == "vs") VinBuild(key, refl, v);
         if (st == "ps") { FtBuild(key, v); BfBuild(key, refl, v); }
+        if (st is "ts" or "ms") MeshEmuBuild(key, refl, st, srcB);
         WriteRefl(key, refl);
         return refl;
     }
@@ -458,6 +459,30 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         var e = VarLib(key, "_ft", v["_ft.metal"]);
         if (e != null) { Count("ft failed"); Console.Error.WriteLine($"[RED] {key}: typed-output variants {Py.Dumps(m["want"])} failed to build: {e}"); return; }
         Count("ft libs"); Count("ft entries", ((System.Collections.IList)m["want"]).Count);
+    }
+    // #770 宿主自跑任务 / 网格阶段（没有硬件网格着色的 M1 / M2 等，nvn_geometry.inc mtk_emu_get）：翻译器（MeshStage）把宿主计算核入口 main0_tc / main0_mc / main0_mc_z / main0_mv
+    //   写进 _b.metal 的 #ifdef S2A_MESH_EMU 块里，出包的 _b 库不定义它。原先这些入口只在设备上第一次用到时现翻本机源码、带宏现编（提交线程上，一对着色器几百毫秒到十几秒，
+    //   11-17 本机同包对照：帧间隔 p95 17.6 → 37.0 ms、一次出图停 10 秒）。现在出包时就带宏另编一份 <键>_bme.metallib（库容器种类 53），设备直接取入口、不再现翻现编；
+    //   网格着色器的顶点记录步长（dm_vertex_t 的 float4 成员数 × 16，宿主按它排顶点）写进 _b.json 的 mesh_emu.vstride
+    internal static int MeshEmuStride(string src)   // 网格着色器源码里 struct dm_vertex_t 的字节数（float4 成员 × 16）；没有这个结构 → 0
+    {
+        int a = src.IndexOf("struct dm_vertex_t {", StringComparison.Ordinal); if (a < 0) return 0;
+        int z = src.IndexOf("};", a, StringComparison.Ordinal); if (z < 0) return 0;
+        var body = src.AsSpan(a, z - a); int n = 0;
+        for (int i = body.IndexOf("float4 ".AsSpan()); i >= 0; ) { n++; int j = body[(i + 7)..].IndexOf("float4 ".AsSpan()); i = j < 0 ? -1 : i + 7 + j; }
+        return n * 16;
+    }
+    internal static bool MeshEmuWanted(string st, string src) =>   // 这一支有宿主入口：任务 main0_tc、网格 main0_mc（都在 #ifdef S2A_MESH_EMU 里；无任务的网格不出）
+        src.Contains("#ifdef S2A_MESH_EMU\n", StringComparison.Ordinal) && src.Contains(st == "ts" ? "kernel void main0_tc(" : "kernel void main0_mc(", StringComparison.Ordinal);
+    static void MeshEmuBuild(string key, PyDict refl, string st, string src)
+    {
+        if (!MeshEmuWanted(st, src)) return;
+        int vs = st == "ms" ? MeshEmuStride(src) : 0;
+        if (st == "ms" && vs == 0) { Count("mesh emu failed"); Say($"[RED] {key}: mesh shader has host entries but no dm_vertex_t record: M1 / M2 translate it on the device at first use"); return; }
+        var e = VarLib(key, "_bme", "#define S2A_MESH_EMU 1\n" + src);
+        if (e != null) { Count("mesh emu failed"); Say($"[RED] {key}: host task / mesh entries (S2A_MESH_EMU) do not compile ({e}): M1 / M2 translate it on the device at first use"); return; }
+        Count("mesh emu built");
+        if (st == "ms") refl["mesh_emu"] = new PyDict { ["vstride"] = (long)vs };
     }
     static void BfBuild(string key, PyDict refl, Dictionary<string, string> v)
     {
@@ -750,6 +775,7 @@ static partial class Build   // 影响翻译产物的那段（包记录切片、
         Say($"variant cache{(BfOn ? "" : " (readable-tile _bf off, DMSH_BF unset)")}: generated {N("bf generated")}");
         Say($"typed-output variants (ft_finish, fout_want.tsv {FoutWant.Values.Sum(s => s.Count)} requests): {N("ft entries")} entry points in {N("ft libs")} libraries, {N("ft covered")} covered by main0_u or nothing integer after the colour filter, {N("ft failed")} libraries failed");
         Say($"sampler-emulation variants (<key>_se, se_want.tsv {N("se wanted")} keys): built {N("se built")}, nothing to emulate {N("se nothing to emulate")}, failed {N("se failed")}");
+        Say($"host task / mesh entries (<key>_bme, S2A_MESH_EMU, #770): built {N("mesh emu built")}, failed {N("mesh emu failed")}");
         Say($"shadow-input libraries (<key>_bv, S2A.Dsh DshVin): {N("vin generated")} generated ({N("vin batches")} batches), {N("vin failed")} failed to compile, {N("vin not generated")} not generated; {N("vin inputs")} integer inputs shadowed, {N("vin float only")} of them with no other-sign shadow (attribute indices ran out)");
         Say(Metal.Summary());
         var ok = res.Where(r => r.St == "ok" && FinFlags.ContainsKey(r.Key)).Select(r => FinFlags[r.Key]).ToList();

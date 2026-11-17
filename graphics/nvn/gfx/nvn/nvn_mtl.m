@@ -7029,7 +7029,7 @@ int nvn_be_reload_direct_library(void) {
     g_warm_started = 0; warm_start();   // 同首次：读完映射表就起预热
     return 1;
 }
-// A library name <16 hex key>_b / _bf / _bv / _b_t<d> / _bg<i> / _bgv / _bgs<i> / _bgc → its container kind (json: the reflection beside it); -1 if the name is not one
+// A library name <16 hex key>_b / _bf / _bv / _bme / _b_t<d> / _bg<i> / _bgv / _bgs<i> / _bgc → its container kind (json: the reflection beside it); -1 if the name is not one
 static int lp_kind_of(const char *name, int json) {
     if (strlen(name) < 18 || name[16] != '_') return -1;
     const char *s = name + 17;
@@ -7037,7 +7037,8 @@ static int lp_kind_of(const char *name, int json) {
     if (!strcmp(s, "bf")) return json ? -1 : LP_K_BF;
     if (!strcmp(s, "bv")) return json ? -1 : LP_K_BV;
     if (!strcmp(s, "ft")) return json ? -1 : LP_K_FT;   // a pixel shader's typed-output variants (dmsh_build.py ft_finish)
-    if (!strcmp(s, "se")) return json ? -1 : LP_K_SE;   // a shader's sampler-emulation variant, precompiled where the census saw it used (se_packed)
+    if (!strcmp(s, "se")) return json ? -1 : LP_K_SE;
+    if (!strcmp(s, "bme")) return json ? -1 : LP_K_BME;   // #770 a task / mesh shader's host compute-kernel entries, compiled with S2A_MESH_EMU at pack time (Build.cs MeshEmuBuild)   // a shader's sampler-emulation variant, precompiled where the census saw it used (se_packed)
     if (!strcmp(s, "bgv")) return json ? LP_K_BGVJSON : LP_K_BGV;
     if (!strcmp(s, "bgc")) return json ? LP_K_BGCJSON : LP_K_BGC;   // passthrough-geometry fast path (nvn_geometry.inc geo_draw)
     if (s[0] == 'b' && s[1] == 'g' && s[2] == 's' && s[3] >= '0' && s[3] <= '9' && !s[4]) return (json ? LP_K_BGSJSON : LP_K_BGS) + (s[3] - '0');

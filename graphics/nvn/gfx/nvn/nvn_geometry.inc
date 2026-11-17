@@ -149,7 +149,9 @@ static void mtk_publish(void) {   // pace on, submit thread, before a mesh draw 
 //   e6759f45b660ec01 那对就挂；网格输出 0 个图元不挂；任务交宿主、网格仍交驱动照挂；苹果论坛 708654 / FB10367407 同类）。这些 GPU 上两段都由宿主跑：
 //   任务计算核 main0_tc 把每个任务组的载荷与派生数写进交换缓冲（S2A.Dsh MeshStage EMU_SLOT），排表核 mxe_scan 前缀和出「第几个网格组属于哪个任务组的第几组」，
 //   网格计算核 main0_mc 把顶点记录与紧排的索引写进交换缓冲，再用顶点函数 main0_mv 普通索引间接画。都在同一个命令缓冲里、GPU 上排好，CPU 不回读。
-//   入口只在宿主现编时定义 S2A_MESH_EMU 才有（dm_shader_base_cached：本机翻译器出的基础源码），其中的循环有圈数上限（MeshStage.GuardLoops）。
+//   入口在 _b.metal 的 #ifdef S2A_MESH_EMU 块里，循环有圈数上限（MeshStage.GuardLoops）。出包时带宏另编一份 <键>_bme.metallib（Build.cs MeshEmuBuild，库容器种类 53），
+//   网格着色器的顶点记录步长写进 _b.json 的 mesh_emu.vstride；设备直接取，不现翻现编（11-17：原先第一次用到时在提交线程上现翻本机源码、带宏现编，
+//   一对着色器几百毫秒到十几秒，本机同包对照帧间隔 p95 17.6 → 37.0 ms、一次出图停 10 秒）。包里没有 _bme 的（预编之前出的包）才照旧现翻现编（dm_shader_base_cached）。
 //   缺省：macOS 且 GPU 不支持 Apple9 时开；S2A_MESH_EMU=1 / 0 两头强制。做不了的（载荷中转、逐图元输出、源码拿不到、参数缓冲对不上）照旧走驱动
 enum { MXE_SLOT = 28, MXE_HEAD = 32, MXE_TASK_CAP = 4096 };
 _Static_assert(VB_SLOT(12) == MXE_SLOT, "slot 28 of the vertex table is vertex stream 12's: the host-stage draw writes it through enc_r_vbuf so the next vertex draw rebinds the stream");
@@ -187,32 +189,55 @@ static id<MTLComputePipelineState> mxe_scan_pso(void) {
 }
 static NSMutableDictionary *g_mxe_vs;   // mesh shader key → its vertex record's bytes
 static NSMutableDictionary *g_mxe;   // shader key + entry → MTLFunction (task: its compute pipeline) or NSNull (cannot); submit thread
+static NSMutableDictionary *g_mxe_lib;   // shader key → its packaged <key>_bme library (prebuilt at pack time) or NSNull (the package has none); submit thread
+static id<MTLLibrary> mtk_emu_lib(NvShader *sh) {
+    NSString *k = @(sh->key); if (!g_mxe_lib) g_mxe_lib = [NSMutableDictionary dictionary];
+    id got = g_mxe_lib[k]; if (got) return got == NSNull.null ? nil : got;
+    NSError *e = nil; id<MTLLibrary> lib = lib_from_pack([NSString stringWithFormat:@"%s_bme", sh->key].UTF8String, &e);
+    g_mxe_lib[k] = lib ?: NSNull.null;
+    return lib;
+}
+static NSUInteger mtk_emu_vstride(NvShader *sh) {   // the packaged mesh shader's vertex record bytes (_b.json mesh_emu.vstride, Build.cs MeshEmuStride); 0 = not given
+    NSData *d = json_from_pack([NSString stringWithFormat:@"%s_b", sh->key].UTF8String); if (!d) return 0;
+    NSDictionary *j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+    id v = [j isKindOfClass:NSDictionary.class] ? j[@"mesh_emu"] : nil; v = [v isKindOfClass:NSDictionary.class] ? v[@"vstride"] : nil;
+    return [v isKindOfClass:NSNumber.class] ? [v unsignedIntegerValue] : 0;
+}
 static id mtk_emu_get(NvShader *sh, int st, NSString *entry) {
     NSString *k = [NSString stringWithFormat:@"%s/%@", sh->key, entry];
     if (!g_mxe) g_mxe = [NSMutableDictionary dictionary];
     id got = g_mxe[k]; if (got) return got == NSNull.null ? nil : got;
     uint8_t md[8] = {0}; for (int i = 0; i < 8; i++) { unsigned b = 0; if (sscanf(sh->key + 2 * i, "%2x", &b) != 1) break; md[i] = (uint8_t)b; }
     char path[1200], why[300] = ""; id r = nil; uint64_t t0 = bp_now();
+    id<MTLLibrary> plib = mtk_emu_lib(sh);   // prebuilt in the package (the normal case); nil: a package made before, translated here
     do {
-        if (dm_shader_base_cached(md, st, path, sizeof path)) { snprintf(why, sizeof why, "no translation of it on this device"); break; }
-        NSString *src = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:nil];
-        if (![src containsString:entry]) { snprintf(why, sizeof why, "its translation has no %s (a relayed payload, or the exchange slot is taken)", entry.UTF8String); break; }
-        MTLCompileOptions *co = dm_msl_opts(); co.preprocessorMacros = @{@"S2A_MESH_EMU": @1};
-        NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:co error:&e];
-        if (!lib) { snprintf(why, sizeof why, "failed to build: %s", e.localizedDescription.UTF8String); break; }
-        id<MTLFunction> f = lib_entry(lib, entry);
+        id<MTLFunction> f = nil; NSUInteger vstride = 0; NSError *e = nil;
+        if (plib) {
+            f = lib_entry(plib, entry);
+            if (!f) { snprintf(why, sizeof why, "its packaged _bme library has no %s", entry.UTF8String); break; }
+            if (st == 5 && !(vstride = mtk_emu_vstride(sh))) { snprintf(why, sizeof why, "its _b.json gives no mesh_emu.vstride"); break; }
+        } else {
+            if (dm_shader_base_cached(md, st, path, sizeof path)) { snprintf(why, sizeof why, "no translation of it on this device"); break; }
+            NSString *src = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:nil];
+            if (![src containsString:entry]) { snprintf(why, sizeof why, "its translation has no %s (a relayed payload, or the exchange slot is taken)", entry.UTF8String); break; }
+            MTLCompileOptions *co = dm_msl_opts(); co.preprocessorMacros = @{@"S2A_MESH_EMU": @1};
+            id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:co error:&e];
+            if (!lib) { snprintf(why, sizeof why, "failed to build: %s", e.localizedDescription.UTF8String); break; }
+            f = lib_entry(lib, entry);
+            if (f && st == 5) {   // the vertex record's stride: the float4 members of dm_vertex_t (S2A.Dsh MeshStage; the packaged ones carry it in _b.json, Build.cs MeshEmuStride)
+                NSRange a = [src rangeOfString:@"struct dm_vertex_t {"]; NSRange z = a.location == NSNotFound ? a : [src rangeOfString:@"};" options:0 range:NSMakeRange(a.location, src.length - a.location)];
+                if (z.location != NSNotFound) vstride = ([[src substringWithRange:NSMakeRange(a.location, z.location - a.location)] componentsSeparatedByString:@"float4 "].count - 1) * 16;
+            }
+        }
         NSUInteger al = f && sh->rf.nb && ![entry isEqualToString:@"main0_mv"] ? [f newArgumentEncoderWithBufferIndex:sh->rf.abi].encodedLength : sh->arg_len;   // main0_mv takes the vertex records alone
         if (!f || al != sh->arg_len) { snprintf(why, sizeof why, "%s", f ? "it takes another argument buffer than the library's" : "no such entry"); break; }
         if (st == 4 || [entry hasPrefix:@"main0_mc"]) { r = [g_dev newComputePipelineStateWithFunction:f error:&e]; if (!r) snprintf(why, sizeof why, "its compute pipeline failed: %s", e.localizedDescription.UTF8String); }
         else r = f;
-        if (r && st == 5) {   // the vertex record's stride: the float4 members of dm_vertex_t (S2A.Dsh MeshStage)
-            NSRange a = [src rangeOfString:@"struct dm_vertex_t {"]; NSRange z = a.location == NSNotFound ? a : [src rangeOfString:@"};" options:0 range:NSMakeRange(a.location, src.length - a.location)];
-            NSUInteger nf = 0; if (z.location != NSNotFound) nf = [[src substringWithRange:NSMakeRange(a.location, z.location - a.location)] componentsSeparatedByString:@"float4 "].count - 1;
-            if (!g_mxe_vs) g_mxe_vs = [NSMutableDictionary dictionary]; g_mxe_vs[@(sh->key)] = @(nf * 16);
-        }
+        if (r && st == 5) { if (!g_mxe_vs) g_mxe_vs = [NSMutableDictionary dictionary]; g_mxe_vs[@(sh->key)] = @(vstride); }
     } while (0);
     g_mxe[k] = r ?: NSNull.null;
-    if (r) MLOG("task / mesh host stages: %s %s %s ready in %.1f ms", st == 4 ? "task" : "mesh", sh->key, entry.UTF8String, (bp_now() - t0) / 1e6);
+    if (r) MLOG("task / mesh host stages: %s %s %s ready in %.1f ms (%s)", st == 4 ? "task" : "mesh", sh->key, entry.UTF8String, (bp_now() - t0) / 1e6,
+                plib ? "prebuilt in the package" : "translated on this device: the package predates prebuilt host stages, re-pack to drop this stall");
     else MLOG("【黄】 task / mesh host stages: %s %s %s: %s; its draws stay on the driver's mesh pipeline (#770)", st == 4 ? "task" : "mesh", sh->key, entry.UTF8String, why);
     return r;
 }

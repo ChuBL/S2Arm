@@ -32,6 +32,11 @@ static class DshBatch
         if (argv.Length >= 1 && argv[0] == "--c1cb") return C1Cb.Cli(argv[1..]);
         if (argv.Length == 3 && argv[0] == "--spvc-file") return InprocSpvCross.FileCli(argv[1], argv[2]);   // 单测：线程池线程上翻一支 SPIR-V（tests/spvc_deep_stack_test.sh）
         if (argv.Length >= 1 && argv[0] == "--libpack") return LibPack.Cli(argv[1..]);
+        if (argv.Length == 3 && argv[0] == "--mesh-emu-info")   // 单测：#770 出包要不要给这支预编 <键>_bme、网格顶点记录步长（Build.MeshEmuWanted / MeshEmuStride；graphics/tools/direct/tests/t_meshstage.py ⑧）
+        {
+            var src = File.ReadAllText(argv[1]); bool w = Build.MeshEmuWanted(argv[2], src);
+            Console.WriteLine($"{{\"wanted\": {(w ? "true" : "false")}, \"vstride\": {(w && argv[2] == "ms" ? Build.MeshEmuStride(src) : 0)}}}"); return 0;
+        }
         if (argv.Length >= 2 && argv[0] == "--win-relative")   // 单测：Windows 版 Metal 编译器参数里带空格 / 非 ASCII 的路径改成相对工作区（Metal.WinRelative，t_metal_nospace.py ⑥）
         {
             try { foreach (var x in Metal.WinRelative(argv[2..], argv[1])) Console.WriteLine(x); return 0; }

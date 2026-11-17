@@ -147,5 +147,23 @@ with tempfile.TemporaryDirectory() as t:
         f = os.path.join(t, nm + '.metal'); open(f, 'w').write(src)
         p = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', '-w', '-DS2A_MESH_EMU=1', '-fmetal-math-mode=relaxed', '-fpreserve-invariance', f, '-o', f + '.air'], capture_output=True, text=True)
         ck(f'⑦ {nm} 定义 S2A_MESH_EMU 交 xcrun metal（macosx）编过', p.returncode == 0, p.stderr.strip()[-300:])
+# ⑧ #770 出包预编（Build.cs MeshEmuBuild，经 dsh_batch --mesh-emu-info）：有任务的网格要预编 <键>_bme，顶点记录步长 = dm_vertex_t 的 float4 成员数 × 16
+#   （期望按本文件另写的正则数：结构体里「float4 名字」的行数）；任务要预编、步长不给（0）；无任务的网格不预编。反证：Build.MeshEmuWanted 恒返回 false → ⑧ 前两条红
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../../translator')); import dsh_batch
+BCMD, _ = dsh_batch.get()
+def want_stride(src):
+    m = re.search(r'struct dm_vertex_t \{(.*?)\};', src, re.S)
+    return 16 * len(re.findall(r'\bfloat4 \w', m.group(1))) if m else 0
+with tempfile.TemporaryDirectory() as t:
+    def info(src, st):
+        f = os.path.join(t, st + str(len(src)) + '.metal'); open(f, 'w').write(src)
+        p = subprocess.run([*BCMD, '--mesh-emu-info', f, st], capture_output=True, text=True)
+        try: return json.loads(p.stdout)
+        except ValueError: return {'err': (p.stdout + p.stderr)[-300:]}
+    ia, ib, ic = info(A0, 'ms'), info(B0, 'ms'), info(C0, 'ts')
+    wa = want_stride(A0)
+    ck(f'⑧ 有任务的网格：要预编、步长 {wa}（float4 成员 {wa // 16} 个）', ia == {'wanted': True, 'vstride': wa} and wa > 0, ia)
+    ck('⑧ 任务：要预编、步长 0', ic == {'wanted': True, 'vstride': 0}, ic)
+    ck('⑧ 无任务的网格：不预编', ib == {'wanted': False, 'vstride': 0}, ib)
 print(f"{'✗' if bad else '✓'} meshstage：{n} 项，{bad} 项不符（手排 5 种控制段 / SPH、2 种拒绝、载荷中转、5 份 MSL 编 iOS）")
 sys.exit(bool(bad))
