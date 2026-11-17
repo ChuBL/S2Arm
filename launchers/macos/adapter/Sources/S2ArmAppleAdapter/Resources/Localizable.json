@@ -10190,5 +10190,9 @@
  {
   "source": "再点一次「开始」就能进：这一局已记下这款要的内存，下次起局按它给。",
   "en": "Click Start again to play: this session noted how much memory the game needs, and the next start uses it."
+ },
+ {
+  "source": "在电脑上的 S2Arm 里选这台 iPhone 用的同一个 Apple ID，对这款游戏再导出一次 .s2arm。",
+  "en": "In S2Arm on your computer, choose the same Apple ID this iPhone uses, then export this game's .s2arm again."
  }
 ]

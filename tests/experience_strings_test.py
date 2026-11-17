@@ -16,7 +16,7 @@ def run(*args):
 class ExperienceStrings(unittest.TestCase):
     def test_both_languages_cover_every_ios_code(self):
         codes = sorted(i["code"] for i in json.loads((ROOT / "launchers/shared/experience.v1.json").read_text(encoding="utf-8"))["errors"]["items"] if i["code"].startswith(("ios_install_", "ios_import_")))
-        self.assertEqual(len(codes), 13)   # 11-13 加着色器更新包两个码；11-16 加导入来的 IMG 坏（ios_import_img_corrupt）
+        self.assertEqual(len(codes), 14)   # 11-13 加着色器更新包两个码；11-16 加导入来的 IMG 坏（ios_import_img_corrupt）；11-17 加 .s2arm 另一个团队（ios_import_other_team）
         for lang in ("zh-Hans", "zh-Hant", "en"):
             with self.subTest(lang=lang):
                 p = run("--lang", lang)

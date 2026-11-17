@@ -171,9 +171,12 @@ static void zst_cases(const char *T) {
 //   ② 帧没到尾（拷了一半）→ 1、什么都不写 ③ 第一个条目不是 s2arm.json → -2 / ios_install_manifest_bad ④ 条目路径带 .. → -2、清单不换
 //   ⑤ 放进「放这里导入」：扫描导入、导好删掉原文件
 int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size_t gid_n); const char *s2a_s2arm_import_code(void);
+void s2a_s2arm_import_test_team(int (*f)(char *, size_t, char *, size_t));
+static const char *g_s2arm_signer = "null";
+static int app_team(char *t, size_t n, char *a, size_t an) { snprintf(t, n, "ABCDE12345"); if (an) a[0] = 0; return 0; }   // 这个 App 的团队（真机读描述文件）
 static void s2arm_pack(const char *T, const char *out, const char *first, const char *bad_name) {
     char tp[1024]; snprintf(tp, sizeof tp, "%s/s2arm.tar", T); FILE *f = fopen(tp, "wb"); CHECK(f != NULL, "造 .s2arm tar 失败"); if (!f) return;
-    const char *j = "{\n \"format\": \"s2arm\",\n \"schema\": 1,\n \"title_id\": \"0100abcde0000000\",\n \"image_sha256\": \"0123456789abcdefffff\"\n}";
+    char j[512]; snprintf(j, sizeof j, "{\n \"format\": \"s2arm\",\n \"schema\": 1,\n \"title_id\": \"0100abcde0000000\",\n \"image_sha256\": \"0123456789abcdefffff\",\n \"signer\": %s\n}", g_s2arm_signer);
     tar_entry(f, first, '0', j, strlen(j));
     const char *cat = "{\"schema\": 1, \"title_id\": \"0100ABCDE0000000\", \"team\": null}";
     tar_entry(f, "program/catalogue.json", '0', cat, strlen(cat));
@@ -216,6 +219,20 @@ static void s2arm_cases(const char *T) {
     snprintf(src, sizeof src, "%s/放这里导入/d.s2arm", docs); s2arm_pack(T, src, "s2arm.json", NULL);
     s2a_img_scan(docs);
     CHECK(stat(src, &st) != 0 && stat(p, &st) == 0, "⑤ 导入文件夹里的 .s2arm：导好、原文件删掉");
+    // ⑥ 电脑按另一个团队签好（signer.team ≠ 这个 App 的团队）：-5 / ios_import_other_team，一个文件都不写
+    s2a_s2arm_import_test_team(app_team);
+    { char g6[1200]; snprintf(g6, sizeof g6, "%s/s2h/Library/Application Support/S2Arm/games/0100ABCDE0000000", T); snprintf(c, sizeof c, "rm -rf '%s'", g6); sh(c); }
+    g_s2arm_signer = "{\"mode\": \"appleid\", \"team\": \"ZZZZZ99999\"}";
+    snprintf(src, sizeof src, "%s/e.s2arm", T); s2arm_pack(T, src, "s2arm.json", NULL);
+    rc = s2a_s2arm_import(docs, src, g, sizeof g);
+    CHECK(rc == -5 && !strcmp(s2a_s2arm_import_code(), "ios_import_other_team") && stat(p, &st) != 0 && stat(base, &st) != 0,
+          "⑥ 另一个团队签好的：返回 %d、码 %s（期望 -5、ios_import_other_team），什么都没写", rc, s2a_s2arm_import_code());
+    // ⑦ 同一个团队签好的：照常导入
+    g_s2arm_signer = "{\"mode\": \"appleid\", \"team\": \"ABCDE12345\"}";
+    snprintf(src, sizeof src, "%s/f.s2arm", T); s2arm_pack(T, src, "s2arm.json", NULL);
+    rc = s2a_s2arm_import(docs, src, g, sizeof g);
+    CHECK(rc == 0 && stat(p, &st) == 0, "⑦ 同团队签好的：返回 %d（期望 0）、清单换上", rc);
+    s2a_s2arm_import_test_team(NULL); g_s2arm_signer = "null";
 }
 int main(void) {
     char T[] = "/tmp/s2a_t_pack_XXXXXX"; if (!mkdtemp(T)) return 1;

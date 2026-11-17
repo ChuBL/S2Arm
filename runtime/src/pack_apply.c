@@ -14,6 +14,7 @@
 #include "../include/s2a_selfcheck_page.h"   // 说明页标题「游戏资源不完整」与自检提示页同一句
 __attribute__((weak)) int s2a_ui_zh(void) { return 1; }   // 界面语言（s2a_ui_text.h）：iOS ios/app.m、Mac macos/front_mac.m 强定义；别的平台 / 只链本文件的单测按中文
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -958,6 +959,8 @@ static int img_place(const char *proc_docs, const char *path, int pass) {   // 0
 //   签名不在这里做：清单 team 为空，起局时 ios/program_resign.m 用手机上的身份签这一款。派生件逐个临时名改名写进 资源包/。
 //   返回 0 = 导入好（gid 写这一款的游戏号）；1 = 文件还在拷（zstd 帧没到尾，原样留着下次再看）；负数 = 失败，s2a_s2arm_import_code / _failure 给码与原因
 static char g_s2arm_err[1600], g_s2arm_code[48];
+static int (*g_s2arm_team_test)(char *, size_t, char *, size_t);   // 单测换掉「这个 App 的团队」（真机走描述文件）
+void s2a_s2arm_import_test_team(int (*f)(char *, size_t, char *, size_t)) { g_s2arm_team_test = f; }
 const char *s2a_s2arm_import_failure(void) { return g_s2arm_err; }
 const char *s2a_s2arm_import_code(void) { return g_s2arm_code; }
 static int s2arm_fail(int rc, const char *code, const char *fmt, ...) {
@@ -1030,6 +1033,15 @@ int s2a_s2arm_import(const char *proc_docs, const char *src, char *gid_out, size
             for (int i = 0; i < 16; i++) if (gid[i] >= 'a' && gid[i] <= 'f') gid[i] -= 32;
             int ok = strlen(gid) == 16; for (int i = 0; i < 16 && ok; i++) ok = (gid[i] >= '0' && gid[i] <= '9') || (gid[i] >= 'A' && gid[i] <= 'F');
             if (!ok) { rc = s2arm_fail(-2, "ios_install_manifest_bad", "s2arm.json 的游戏号「%s」不对", gid); break; }
+            {   // 电脑已按某个团队签好（s2arm.json signer.team，11-17 维护者定）：和这个 App 的团队不一样就不导（程序签名本机不认），一个文件都不写；
+                //   同团队 = 签好的照用（同团队不同证书也能加载，真机实测过）；没写团队 = 未签名，起局时手机签（ios/program_resign.m）。
+                //   App 团队从描述文件读（ios/prov_expiry.m，只在 iOS App 里有：运行时找，Mac 宿主 / 安卓 / 单测找不到就不比）
+                char steam[32] = "", ateam[64] = "", aid[512] = ""; s2arm_json_str(j, "team", steam, sizeof steam);
+                int (*ids)(char *, size_t, char *, size_t) = (int (*)(char *, size_t, char *, size_t))dlsym(RTLD_DEFAULT, "s2a_prov_signing_ids_self");
+                if (g_s2arm_team_test) ids = g_s2arm_team_test;
+                if (steam[0] && ids && ids(ateam, sizeof ateam, aid, sizeof aid) >= 0 && ateam[0] && strcmp(ateam, steam)) {
+                    rc = s2arm_fail(-5, "ios_import_other_team", "这个 .s2arm 的程序按团队 %s 签好，这个 App 是团队 %s：程序签名本机不认，不导入", steam, ateam); break; }
+            }
             if (strstr(j, "\"schema\": 1") == NULL && strstr(j, "\"schema\":1") == NULL) LOG("【黄】.s2arm 导入：%s 的 schema 不是 1，按 1 的布局照常导入（维护者 11-17：校验不过不整个拒绝）", gid);
             snprintf(vdir, sizeof vdir, "v-%.16s-s2arm", strlen(sha) >= 16 ? sha : "0000000000000000");
             snprintf(root, sizeof root, "%s/games/%s/资源包", base, gid); snprintf(prog, sizeof prog, "%s/games/%s/program", base, gid);
