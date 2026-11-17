@@ -2531,6 +2531,78 @@ def phone_busy(ph, games):
     return got is not False
 
 
+# App 一打开就导入钥匙串、立刻删这三份（11-17 维护者：私钥是玩家自己的，进他自己账号的加密备份也无妨，不另放 Caches）。
+#   已交没交按手机上的现状判：App 导入后写的 current.json / 还没导入的 incoming 清单里是同一张证书就不重交
+IDENTITY_INCOMING = "Library/Application Support/S2Arm/identity/incoming"
+IDENTITY_CURRENT = "Library/Application Support/S2Arm/identity/current.json"   # App 导入成功后写（团队号、证书 sha1，不含私钥）
+
+
+def _identity_on_phone(c, ph, sha1):
+    """手机上这张证书已导入（current.json）或还等着导入（incoming/identity.json）→ True；都没有（从没交过 / App 删了重装）→ False"""
+    if not sha1:
+        return False
+    with tempfile.TemporaryDirectory(dir=c.private) as w:
+        cl = ph.client(w)
+        for rel in (IDENTITY_CURRENT, f"{IDENTITY_INCOMING}/identity.json"):
+            got = Path(w) / "probe.json"
+            if cl.get(rel, got):
+                try:
+                    if json.loads(got.read_text(encoding="utf-8")).get("cert_sha1") == sha1:
+                        return True
+                except ValueError:
+                    pass
+    return False
+
+
+def deliver_identity(c, ph):
+    """0.6.0 通用壳：把手机自签要的私钥 + 叶证书交给 App（cmdr 方案「私钥怎么交给 App」，11-17 真机验过 DER 两份能配成签名身份）。
+    只走本机 USB（s2a-devpush），写进 App 数据容器 IDENTITY_INCOMING：key.der（PKCS#1）、cert.der、最后改名就位的 identity.json（不含私钥）。
+    通用壳开关关着（0.6.0 前缺省）一个字节都不写。
+    交得出的只有 Windows Apple ID 模式（Impactor / plumesign 的 keys/<团队>/key.pem）；Mac 现在借 Xcode 钥匙串、证书模式另做，都照旧电脑签。
+    设备记录 identity.key_fp 与本机私钥文件指纹相同、且手机上已导入或还等着导入同一张证书 = 交过了，不联网列证书、不重交。交不出 / 推不进都不挡推送：记一行，照旧电脑签。→ 交了的证书 sha1 | None"""
+    import hashlib
+    import program_pack
+    if not program_pack.enabled(c) or not hasattr(ph, "W") or devcert.active(c):   # 开关关着一个字节都不写；只有 Windows 的手机对象（WinPhone）带 W
+        return None
+    try:
+        team = ph.W.impactor.selected_team()
+        fp = ph.W.key_fingerprint(team) if team else None
+        if not fp:
+            return None
+        done = layout.load_device(c, ph.key).get("identity") or {}
+        if done.get("team") == team and done.get("key_fp") == fp and _identity_on_phone(c, ph, done.get("cert_sha1")):
+            return None   # 同一把私钥、手机上已导入或还等着导入：不联网、不重交
+        exe = ph.W.plumesign_path((ph.W.impactor.bundled(c.r.get("resources")) or {}).get("plumesign"))
+        ident = ph.W.plume_identity(exe, team, log=c.logs / (c.task + "-identity.log")) if exe else None
+        if not ident:
+            trace(c, "私钥没交给 App：苹果列表里没有本机私钥对应的证书（或列不出），照旧在电脑签")  # 非玩家句
+            return None
+        sha1 = hashlib.sha1(ident["cert"]).hexdigest()
+        meta = dict(schema=1, team=team, cert_sha1=sha1, created=ident["created"], source="appleId")
+        with tempfile.TemporaryDirectory(dir=c.private) as w:
+            d = Path(w) / "identity"
+            d.mkdir()
+            key = d / "key.der"
+            key.touch(mode=0o600)
+            key.write_bytes(ident["key"])
+            (d / "cert.der").write_bytes(ident["cert"])
+            (d / "identity.json").write_text(json.dumps(meta), encoding="utf-8")
+            cl = ph.client(w)
+            cl.put(key, f"{IDENTITY_INCOMING}/key.der")
+            cl.put(d / "cert.der", f"{IDENTITY_INCOMING}/cert.der")
+            cl.put(d / "identity.json", f"{IDENTITY_INCOMING}/identity.json.pc.tmp")
+            ok, out = cl.mv(f"{IDENTITY_INCOMING}/identity.json.pc.tmp", f"{IDENTITY_INCOMING}/identity.json")
+            if not ok:
+                raise OSError(f"identity.json 改名就位失败：{out[-200:]}")
+        rec = layout.load_device(c, ph.key)
+        layout.save_device(c, ph.key, dict(rec, identity=dict(team=team, key_fp=fp, cert_sha1=sha1, at=time.time())))
+        trace(c, f"私钥与证书已交给 App（证书 sha1 {sha1[:12]}）")  # 非玩家句
+        return sha1
+    except Exception as e:   # 不挡推送：交不出就照旧电脑签（推送工具的失败类型在 tools/push_pack.py，作业层不单独 import）
+        trace(c, f"私钥没交给 App（照旧在电脑签）：{type(e).__name__} {str(e)[:200]}")  # 非玩家句
+        return None
+
+
 def push_game(c, gid, ph, steps=True):
     """通用壳「推到 iPhone」（program_pack.enabled）：只推这一款的程序包与资源包，绝不签名装壳（11-17 维护者定：装 App 与推游戏是两个独立作业）。
     手机上没装 S2Arm（这台没有装壳记录）或壳不是本版 → 报「先安装 / 更新 S2Arm」、不推。程序包按设备记录判要不要推（program_pack.need），
@@ -2555,6 +2627,7 @@ def push_game(c, gid, ph, steps=True):
     old = rec.get("games", {}).get(gid) or {}
     rec = layout.load_device(c, ph.key)
     layout.save_device(c, ph.key, dict(rec, games=dict(rec.get("games") or {}, **{gid: dict(old, program=progs[gid])}), at=time.time()))
+    deliver_identity(c, ph)   # 0.6.0：手机自签要的私钥交给 App（交过了 / 交不出都直接跳过，不挡推送）
     if steps: c.begin("把这款的资源推进 iPhone（只推变了的文件；第一次大游戏要几分钟）", 3, 3)
     files = size = 0
     pushed, mods = old.get("pack", ""), old.get("mods") or {}
