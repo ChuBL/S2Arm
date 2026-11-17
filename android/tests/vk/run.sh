@@ -188,11 +188,12 @@ if [ "$mode" = "--descriptor-indexing" ]; then
 fi
 
 # Pool-table contract fixture shares this validated Vulkan container entry.
+# 把上面找到的 lavapipe / validation 交给它，两边不各找各的。
 if [[ "$mode" == --pool-table* ]]; then
-    exec bash "$repo/android/tests/vk/pool_table.sh" "${mode#--pool-table}"
+    S2A_LAVAPIPE_ICD="$icd" S2A_VK_LAYER_DIR="$layer" exec bash "$repo/android/tests/vk/pool_table.sh" "${mode#--pool-table}"
 fi
 if [ -z "$mode" ]; then
-    bash "$repo/android/tests/vk/pool_table.sh"
+    S2A_LAVAPIPE_ICD="$icd" S2A_VK_LAYER_DIR="$layer" bash "$repo/android/tests/vk/pool_table.sh"
 fi
 
 # FSR1 EASU 专项（--fsr）：合成图 1280x720 → 2133x1200，compute 版 EASU 对照 CPU 双线性。
