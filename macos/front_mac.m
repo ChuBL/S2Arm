@@ -511,10 +511,9 @@ static void sample_motion(GCExtendedGamepad *pad) {
     GCMotion *m = atomic_load(&g_motion_wanted) && !ns2 ? pad.controller.motion : nil;
     set_motion_source(m);
     s2a_pad_motion sample = {0};
-    int known = m.hasRotationRate && m.hasGravityAndUserAcceleration;
+    double gravity[3], user[3], rotation[3];
+    int known = m && s2a_gc_motion_read(m, gravity, user, rotation);   // 只要系统给角速度就收（DualShock 4 / DualSense 没有分开的重力，退总加速度，D-R4CQ）
     if (known) {
-        double gravity[3] = {m.gravity.x, m.gravity.y, m.gravity.z}, user[3] = {m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z};
-        double rotation[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
         float acceleration[3], gyro[3];
         s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
         sample = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
@@ -1088,11 +1087,10 @@ static void sample_slot_motion(GCController *const owner_before[S2A_MAX_PADS]) {
     for (int s = 1; s < S2A_MAX_PADS; s++) {
         GCMotion *m = want ? pad_owner[s].motion : nil;
         s2a_motion_power_select(&g_slot_motion_source[s], m, g_motion_source);
-        BOOL known = m.hasRotationRate && m.hasGravityAndUserAcceleration;
+        double gravity[3], user[3], rotation[3];
+        BOOL known = m && s2a_gc_motion_read(m, gravity, user, rotation);   // 同玩家 1（sample_motion）
         s2a_pad_motion sample = {0};
         if (known) {
-            double gravity[3] = {m.gravity.x, m.gravity.y, m.gravity.z}, user[3] = {m.userAcceleration.x, m.userAcceleration.y, m.userAcceleration.z};
-            double rotation[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
             float acceleration[3], gyro[3];
             s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
             sample = (s2a_pad_motion){clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};

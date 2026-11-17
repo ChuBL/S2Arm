@@ -180,24 +180,7 @@ static void motion_activate(GCController *c, BOOL on) {
     GCMotion *m = c.motion;
     if (m.sensorsRequireManualActivation) m.sensorsActive = on;
 }
-// 手柄给的加速度：正常路径是 gravity + userAcceleration；但 DualSense / Switch Pro 在 iOS 上实测只有 hasRotationRate
-//   （hasGravityAndUserAcceleration = NO、hasAttitude = NO，2026-11-14 真机日志），那两项恒为 0。此时退到「总加速度
-//   acceleration（含重力）」——数学上就是 gravity + userAcceleration，换算出来一模一样。
-//   两者都没有就只报角速度（accel 全 0）：甩 / 转这类靠角速度的动作照常，倾斜瞄准会漂，但总比整路样本丢掉好。
-//   姿态四元数反推重力那条没留：手上两只手柄都不给 attitude，验不了符号方向，宁可不要没验证过的分支。
-static void motion_acceleration(GCMotion *m, double gravity[3], double user[3]) {
-    gravity[0] = gravity[1] = gravity[2] = 0; user[0] = user[1] = user[2] = 0;
-    if (m.hasGravityAndUserAcceleration) {
-        gravity[0] = m.gravity.x; gravity[1] = m.gravity.y; gravity[2] = m.gravity.z;
-        user[0] = m.userAcceleration.x; user[1] = m.userAcceleration.y; user[2] = m.userAcceleration.z;
-        return;
-    }
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"   // acceleration 在 iOS 14 起弃用，但 DualSense / Pro 上它才是唯一的加速度来源
-    double a[3] = {m.acceleration.x, m.acceleration.y, m.acceleration.z};
-#pragma clang diagnostic pop
-    if (a[0] || a[1] || a[2]) { gravity[0] = a[0]; gravity[1] = a[1]; gravity[2] = a[2]; }
-}
+// 手柄 GCMotion 的加速度兜底（总加速度 acceleration）见 runtime/include/phone_axes.h s2a_gc_motion_read（与 Mac macos/front_mac.m 共用）
 // 服务层按槽要体感（玩家 2–4）：out[0]；返回 1 有样本、0 没有。玩家 1 也走这里（controller.m 的 s2a_pad_read_motion）
 __attribute__((visibility("default"), used)) int s2a_pad_read_motion_slot(int slot, s2a_pad_motion out[2]) {
     if (!out) return 0;
@@ -241,10 +224,8 @@ void s2a_ios_slot_feedback_owner(int slot, GCController *c) {
                m.hasRotationRate ? "有" : "无", m.hasAttitude ? "有" : "无", m.hasGravityAndUserAcceleration ? "有" : "无");
     __weak GCController *weakC = c;
     m.valueChangedHandler = ^(GCMotion *motion) {
-        if (!motion.hasRotationRate) return;   // 只要系统给角速度就收：加速度由 motion_acceleration 兜底
-        double gravity[3], user[3];
-        motion_acceleration(motion, gravity, user);
-        double rotation[3] = {motion.rotationRate.x, motion.rotationRate.y, motion.rotationRate.z};
+        double gravity[3], user[3], rotation[3];
+        if (!s2a_gc_motion_read(motion, gravity, user, rotation)) return;   // 只要系统给角速度就收：加速度由 s2a_gc_motion_read 兜底
         float acceleration[3], gyro[3];
         s2a_gc_motion_axes(gravity, user, rotation, acceleration, gyro);
         s2a_pad_motion sample = {up_ns() / 1000, acceleration[0], acceleration[1], acceleration[2], gyro[0], gyro[1], gyro[2]};
