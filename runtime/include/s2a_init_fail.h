@@ -35,8 +35,8 @@ enum { S2A_INIT_FAIL_EXIT = 1, S2A_INIT_FAIL_PAGE = 2 };
 // direct_lib_missing（码 id 沿用）：11-13 起没带直连库照样起局、着色器现编，只剩「设备本身跑不了直连」（无 Metal 4 / Metal 3 路径）会停在这里
 #define S2A_INIT_FAIL_MSG_SHADERS "这台设备的图形芯片跑不了 S2Arm（需要 A13 / M1 或更新的芯片）：换一台更新的 iPhone / iPad 再试。"
 #define S2A_INIT_FAIL_MSG_SHADERS_EN "This device's graphics chip can't run S2Arm (it needs an A13 / M1 or newer chip). Try a newer iPhone or iPad."
-#define S2A_INIT_FAIL_MSG_HEAP    "这款需要更多内存，已经记下，再点一次开始就能进。"
-#define S2A_INIT_FAIL_MSG_HEAP_EN "This game needs more memory. It has been noted, so tap Start again and it will run."
+#define S2A_INIT_FAIL_MSG_HEAP    "这款需要更多内存，已经记下，重新打开就能进。"
+#define S2A_INIT_FAIL_MSG_HEAP_EN "This game needs more memory. It has been noted, so it will run after you reopen the app."
 #define S2A_INIT_FAIL_MSG_DEVICE  "这台设备的内存和地址空间不够运行这款游戏，换一台内存更大的 iPhone / iPad 再试；诊断里有它要多少、这台设备有多少。"
 #define S2A_INIT_FAIL_MSG_DEVICE_EN "This device doesn't have enough memory and address space to run this game. Try an iPhone or iPad with more memory; the diagnostics show how much it needs and how much this device has."
 // 错误码：由失败出口显式指定（host_main.c failed_session 的调用点一处一个），不从摘要文本猜。

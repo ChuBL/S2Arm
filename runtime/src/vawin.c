@@ -841,6 +841,7 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
           if (sl > span_max) span_max = sl;
           uint64_t hn = 0; if (pid) { s2a_docs_path(sp, sizeof sp, "games/%s/wire/%016llX/heap_need", gid, (unsigned long long)pid); hn = read_u64(sp);
             if (!hn) { s2a_docs_path(sp, sizeof sp, "wire/%016llX/heap_need", (unsigned long long)pid); hn = read_u64(sp); } }
+          { char hp[1200]; snprintf(hp, sizeof hp, "%s/heap_need", dir); uint64_t pk = read_u64(hp); if (pk > hn) hn = pk; }   // 包里带的堆需求（出包时探测）
           if (hn > g_heap_learned) g_heap_learned = hn; }
         if (ni > top) top = ni;
         n++;
@@ -873,6 +874,7 @@ static uint64_t need_from_npdm(void) {
       g_ctor_pid = pf ? pf(np) : 0; }   // 单款：文件后备按它找本款实测峰值 / 死亡标记（mem_peak_path）
     g_span_learned = s2a_window_span_seen(g_ctor_pid);
     if (g_ctor_pid) { char hp[1024]; s2a_docs_path(hp, sizeof hp, "wire/%016llX/heap_need", (unsigned long long)g_ctor_pid); g_heap_learned = read_u64(hp); }
+    { char hp[1100]; snprintf(hp, sizeof hp, "%s/heap_need", dir); uint64_t pk = read_u64(hp); if (pk > g_heap_learned) g_heap_learned = pk; }   // 包里带的堆需求（出包时探测，S2A_HEAP_PROBE）：起局前就知道
     return need_dir(dir);
 }
 // 跨度为 0 的红行按事实分（11-05 Minecraft: Story Mode 的 NPDM 是地址空间类型 1，被报成「读不到 main.npdm」）：

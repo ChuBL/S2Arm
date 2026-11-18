@@ -1492,6 +1492,11 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         // 出参先置 0，失败的每条路都带着它返回（同 Ryujinx Syscall.SetHeapSize / KPageTableBase.SetHeapSize 开头 address = 0）：原先失败时 x1 原样留着请求的大小，
         //   不看结果码的游戏拿它当堆基址往下写（D-ASK2 iPad mini 6：设堆 0xD001 后照样初始化堆，写进宿主只读代码段 SIGBUS）
         regs[1] = 0;
+        // 堆需求探测（出包时电脑端跑一次，D-GYNE 根修：起局前就知道这款要多少堆，手机按它定地址窗口）：S2A_HEAP_PROBE=<输出文件>，
+        //   游戏第一次要普通堆就把字节数写进去、立刻退出 0（nninitStartup 里，零点几秒）
+        { static const char *probe; static int probed; if (!probed) { probed = 1; probe = getenv("S2A_HEAP_PROBE"); }
+          if (probe && *probe && size) { FILE *pf = fopen(probe, "w"); int ok = pf && fprintf(pf, "%llu\n", (unsigned long long)size) > 0; if (pf) ok = !fclose(pf) && ok;
+              LOG("堆需求探测：游戏第一次要普通堆 %llu MB，%s %s，退出", (unsigned long long)(size >> 20), ok ? "已写进" : "【红】写不进", probe); s2a_logcon_flush(); _exit(ok ? 0 : 3); } }
         if (size & 0x1fffff) { regs[0] = 0xCA01; return 1; }   // InvalidSize：Horizon 要 2 MB 对齐
         GMU_LOCK();
         uint64_t fixed = pool_fixed();
@@ -1514,7 +1519,13 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (size > g_heap_cur && (uint64_t)g_heap + size > s2a_far_floor()) { GMU_UNLOCK(); regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区（与远端影子撞上）"); return 1; }
         if (size > g_heap_cur && (uint64_t)g_heap >= L.win_base && (uint64_t)g_heap + size > L.win_base + L.win_size) { GMU_UNLOCK();
             // 堆超出宿主占到的地址窗口（D-GYNE：4 GB iPad 窗口 3072 MB、开局要 3120 MB 堆）：同样记下要的堆，下一局 vawin 按它把窗口放大（s2a_window_host_for_heap）
-            if (heap_need_note(g_lay_pid, size)) LOG("普通堆 %llu MB 超出地址窗口：已记下本款要的堆，下次起局按它放大窗口", (unsigned long long)(size >> 20));
+            // 记下了就不把内存不足回给游戏（多数游戏不看结果照样写堆首，崩出 SIGBUS 闪退）：直接走初启失败出口——iOS 停「需要更多内存、已记下、重新打开就能进」提示页，
+            //   Mac / 自动化局失败退出（启动器按 game_heap_learned 报）。只有没带堆需求的旧包会走到这里（新包起局前就按包里的值放大了窗口）
+            if (heap_need_note(g_lay_pid, size)) {
+                LOG("普通堆 %llu MB 超出地址窗口（宿主只占到 [%#llx, %#llx)）：已记下本款要的堆，下次起局按它放大窗口；这一局停在提示页，不让游戏带着失败往下跑",
+                    (unsigned long long)(size >> 20), (unsigned long long)L.win_base, (unsigned long long)(L.win_base + L.win_size));
+                void s2a_init_failed(int code); s2a_init_failed(S2A_INIT_FAIL_E_HEAP_LEARNED);
+            }
             regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区"); return 1; }
         uint64_t lo = (uint64_t)g_heap + (size < g_heap_cur ? size : g_heap_cur), n = size > g_heap_cur ? size - g_heap_cur : g_heap_cur - size;
 #ifdef __ANDROID__
