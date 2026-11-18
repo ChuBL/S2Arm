@@ -249,7 +249,9 @@ NVN_TEST_DIR := $(BUILD)/tests/nvn
 # 包含了生产 nvn_mtl.m 的单测目标都依赖这一组（11-05 nvn_rec_cover 时红时绿：目标只写 nvn_mtl.m，改了它包含的 .inc / .h 时增量构建不重编，
 #   红绿取决于旧对象是哪一版；列车 gate-host 复用检出，批与批之间就这样漂）
 NVN_MTL_DEPS := graphics/nvn/gfx/nvn/nvn_mtl.m $(wildcard graphics/nvn/gfx/nvn/*.inc graphics/nvn/gfx/nvn/*.h graphics/nvn/*.inc graphics/nvn/host/*.h)
-NVN_TEST_HOST_SRCS := $(filter-out runtime/src/host_main.c,$(NATIVE_SRCS)) $(APPLE_PLAT_SRCS) graphics/track/track.c graphics/track/glue.c
+# selfsign.c（手机端自签，要 Security）只给 iOS App / 宿主（HOST_LIBS、IOS_LIBS 带 Security）：图形层单测的链接行各自手写框架、没有 Security，
+#   带上它 216 组单测全部链接失败（11-17 main 红）；它对外的 s2a_selfsign_probe 在 launchctx.c 有弱缺省，单测不缺它
+NVN_TEST_HOST_SRCS := $(filter-out runtime/src/host_main.c runtime/src/selfsign.c,$(NATIVE_SRCS)) $(APPLE_PLAT_SRCS) graphics/track/track.c graphics/track/glue.c
 NVN_TEST_HOST_OBJS := $(addprefix $(NVN_TEST_DIR)/host/,$(addsuffix .o,$(NVN_TEST_HOST_SRCS)))
 NVN_TEST_LIB := $(NVN_TEST_DIR)/nvn/mac/libnvn.a
 NVN_TEST_WIDEN := $(NVN_TEST_DIR)/widen/S2Arm.Gfx.Widen.dylib
