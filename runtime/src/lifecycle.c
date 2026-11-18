@@ -187,7 +187,7 @@ void s2a_host_shutdown(const char *why) {
     { void s2a_det_summary(void); s2a_det_summary(); }
     LOG("未解析导入：%u 个", s2a_unresolved_count());
     s2a_direct_summary(1);   // _exit 不跑 atexit；显式打印现编汇总，不改变停机语义
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__OHOS__)
     // 安卓：钩子在同一个单库里（android/native/runtime/platform/lifecycle_android.c），dlsym(RTLD_DEFAULT) 取不到库内符号
     //   （docs/坑记录.md「安卓单库里 dlsym(RTLD_DEFAULT) 找不到服务层导出」），改链接期弱引用；不带它的宿主单测链接里为空，照旧跳过。
     // 弱链接[android]：s2a_sesmark_clear_home（只有安卓 NDK 单库与 Linux 宿主单测链这一支，都不走 ld64，不需要放行参数）

@@ -59,6 +59,8 @@ void s2a_capacity_stop(void) {}
 // ---- O-2（同步上游 v0.2.6）：上游安卓新接线，鸿蒙暂不接，给空实现保持合并前行为 ----
 // S2A_DOCS 文档根绑定（docs_android.c）：合并前鸿蒙不设 S2A_DOCS，这里继续不设。
 int s2a_android_docs_bind(const char *state_dir) { (void)state_dir; return 0; }
+// 停帧救场「这款下次也关」标记（docs_android.c，main 9df13c4c2）：鸿蒙不设 S2A_DOCS、没有游戏库面板，不读标记。
+int s2a_android_stall_off_apply(const char *docs) { (void)docs; return 0; }
 // 直连安全网武装（dguard_android.c + runtime/src/dguard.c）：鸿蒙不武装，恒放行。
 int s2a_android_dguard_launch(uint64_t program_id, const char *game_data_dir, unsigned direct_abi) {
     (void)program_id; (void)game_data_dir; (void)direct_abi; return 0;

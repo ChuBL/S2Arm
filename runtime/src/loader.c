@@ -347,7 +347,7 @@ static void install_key_page(module_t *m) {
     if (mprotect(page, m->key_page_size, PROT_READ)) die("%s 键页 mprotect", m->name);
 }
 #endif
-#if !defined(__ANDROID__) && !defined(S2A_UNIT_TEST)   // 即时存档（只苹果平台）；单测用桩 mach 头（tests/support/hoststub），没有 vm_region_64
+#if !defined(__ANDROID__) && !defined(__OHOS__) && !defined(S2A_UNIT_TEST)   // 即时存档（只苹果平台）；单测用桩 mach 头（tests/support/hoststub），没有 vm_region_64
 // 即时存档恢复：游戏内存整块写回后，各模块键页里的线程键 TSD 偏移是 A 进程的（跨版本时宿主线程键的编号可能不同），按本进程重写；
 //   键页里别的槽（宽屏 / 补丁开关等玩家设置写的值）随快照照旧，不动
 int s2a_snap_keypages_reapply(void) {
@@ -1312,7 +1312,7 @@ __attribute__((visibility("default"), used)) int s2a_nro_map(const uint8_t sha[3
     pthread_mutex_unlock(&g_nro_mu); return rc;
 #endif
 }
-#if !defined(__ANDROID__)   // 即时存档只在苹果平台
+#if !defined(__ANDROID__) && !defined(__OHOS__)   // 即时存档只在苹果平台
 // 即时存档：动态装载的 NRO（nn::ro）。存：按装载先后（模块表序）记每个装过的 NRO 的哈希 / 大小 / bss / 此刻装着没有；
 //   取：在写回游戏内存之前按原顺序重新装（游标顺次前进，落点与存档时相同；门、符号表、导入补绑都由本版装载器重做），
 //   存档时已卸下的随后标卸下；装着的标「等服务层认领」——服务层重放 LoadNro 时回成功 + 同址，它的账本照原样重建
