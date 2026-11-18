@@ -61,8 +61,11 @@ if(S2A_OHOS_DIRECT)
             # 安卓 plat_nvn.c 里混着的前端宿主入口（nvn_diag_path / dm_opmode / s2a_nvn_prof / s2a_nvn_render_cond）：
             # 原样编进来，平台接口四个名字改名让给鸿蒙版（给上游的反馈：这几项不该放在平台件里）。
             ${A}/gfx_plat/plat_nvn.c
+            # SDK 主版本 / 游戏自带驱动的 NVN API 版本：与安卓、苹果同一份 nvn_drvinfo.inc（同安卓 CMakeLists 的 VK 引擎段）
+            ${A}/nvn/nvn_drvinfo_android.c
             "${CMAKE_CURRENT_LIST_DIR}/direct_ohos.c"
             "${CMAKE_CURRENT_LIST_DIR}/native_buffer_pool.c")
+        set_source_files_properties(${A}/nvn/nvn_drvinfo_android.c PROPERTIES COMPILE_OPTIONS "-Wno-error")
         set_source_files_properties(${A}/gfx_plat/plat_nvn.c PROPERTIES COMPILE_DEFINITIONS
             "nvn_plat_log=s2a_aplat_log;nvn_plat_flag=s2a_aplat_flag;nvn_plat_dir=s2a_aplat_dir;nvn_plat_safepoint=s2a_aplat_safepoint")
     set(s2a_nvn_names "${G}/gfx/nvn/names.txt")
