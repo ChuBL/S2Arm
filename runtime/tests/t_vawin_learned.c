@@ -24,6 +24,12 @@ int main(void) {
     CHECK(h == 41 * GB && h + 16395 * MB <= 64 * GB, "② 学到 16395 MB、空洞 64 GiB：宿主 41 GiB（实得 %llu MB），宿主 + 跨度不超空洞", (unsigned long long)(h / MB));
     CHECK(s2a_window_host_below(64 * GB, 70 * GB) == 3 * GB, "③ 学到的跨度比空洞还大：宿主至少 3 GiB");
     CHECK(s2a_window_host_below(64 * GB, 100 * MB) == 61 * GB, "④ 学到 100 MB：窗口 3 GiB、宿主 61 GiB");
+    // 记下的堆（D-GYNE：4 GB iPad 空洞 6144 MB、宿主原留 3 GiB → 窗口 3072 MB，开局要 3120 MB 堆）：窗口至少「堆 + 768 MB」，宿主往下压、1 GiB 对齐、最少 1 GiB。期望手算
+    CHECK(s2a_window_host_for_heap(3 * GB, 6 * GB, 0) == 3 * GB, "⑪ 没记过堆：宿主照旧");
+    CHECK(s2a_window_host_for_heap(3 * GB, 6 * GB, 0xc3000000ull) == 2 * GB, "⑫ D-GYNE：6144 − (3120 + 768) = 2256 MB → 宿主 2 GiB、窗口 4 GiB");
+    CHECK(s2a_window_host_for_heap(3 * GB, 64 * GB, 0xc3000000ull) == 3 * GB, "⑬ 空洞够大（窗口 61 GiB 装得下）：宿主不动");
+    CHECK(s2a_window_host_for_heap(3 * GB, 5 * GB, 0xc3000000ull) == 1 * GB, "⑭ 空洞 5 GiB：5120 − 3888 = 1232 MB → 1 GiB（到底了）");
+    CHECK(s2a_window_host_for_heap(3 * GB, 4 * GB, 0xc3000000ull) == 1 * GB, "⑮ 空洞 4 GiB 压到最少 1 GiB 仍装不下：照给 1 GiB（svc 照常报不够）");
     // 按学到的跨度该给的窗口（s2a_window_for_span，多款容器选定游戏后收窗口用，#55248c）。期望手算：跨度 × 1.25 + 2 GiB、1 GiB 向上取整、至少 2 GiB
     CHECK(s2a_window_for_span(0) == 0, "④b 没学到：0 = 不限");
     CHECK(s2a_window_for_span(13670 * MB) == 19 * GB, "④c 马车世界学到 13670 MB：13670×1.25+2048 = 19135.5 MB → 19 GiB");

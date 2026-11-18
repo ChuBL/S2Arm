@@ -659,6 +659,21 @@ uint64_t s2a_window_host_below(uint64_t fit, uint64_t learned) {
     uint64_t host = fit > win ? (fit - win) & ~(G - 1) : 0;
     return host > HOST_BELOW ? host : HOST_BELOW;
 }
+// 这款记下真要过的普通堆（svc_mem.c heap_need：SetHeapSize 超出堆区时记）时，窗口至少要「堆 + 固定部分」（模块 + 栈 + 堆前段，D-GYNE 堆基址在窗口 +364 MB，
+//   留到 768 MB）：按上面给的宿主量装不下，就把宿主量往下压到装得下为止（1 GiB 对齐），最少留 HOST_MIN。HOST_BELOW 不是硬数——先让游戏进得了局，
+//   宿主地址真不够在局里碰底照常走已有的报告；压到 HOST_MIN 还装不下就照给（svc 照常回内存不足、崩溃处理按「这台设备内存不够」说）。纯函数，t_vawin_learned 测
+#define HEAP_FIXED (768ull << 20)
+#define HOST_MIN (1ull << 30)
+uint64_t s2a_window_host_for_heap(uint64_t below, uint64_t fit, uint64_t heap) {
+    const uint64_t G = 1ull << 30;
+    if (!heap || fit <= below) return below;
+    uint64_t need = heap + HEAP_FIXED;
+    if (fit - below >= need) return below;
+    uint64_t cap = fit > need ? (fit - need) & ~(G - 1) : 0;
+    return cap > HOST_MIN ? cap : HOST_MIN;
+}
+static uint64_t g_heap_learned;   // 本款（多款容器 = 各款最大）记下真要过的普通堆（wire/<程序号>/heap_need），0 = 没记过
+uint64_t s2a_window_heap_learned(void) { return g_heap_learned; }   // 单测读
 // 起局当场自愈（v0.3.4）：窗口按学到的跨度收窄后布局放不下（svc_mem.c layout_prepare 判 -2 那一刻）——删掉记录，窗口往下放宽回缺省给法（下方只留 HOST_BELOW 给宿主），
 //   布局重算、本局照常起。原先只删记录、本局照样失败，玩家第二次打开才好（v0.3.3 已记下坏记录的玩家装新版后头一次仍失败）。
 //   放宽的那段 [新起点, 窗口底) 起局后可能已被宿主映射占了一部分（lp_map 带提示往这里放直连库段等）：新起点取「已占映射末端（1 GiB 向上取整）」与「留宿主底 + HOST_BELOW」的大者，
@@ -823,7 +838,10 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
           // 这款还没玩过、没有记录：它的跨度不会超过它自己的布局需求 ni，按 ni 算（原先整容器取 0，一款没玩过就把别款也打回 3 GB）。
           //   ni 比空洞还大的（乙布局款）照旧落到 s2a_window_host_below 的 HOST_BELOW
           if (!sl) sl = ni;
-          if (sl > span_max) span_max = sl; }
+          if (sl > span_max) span_max = sl;
+          uint64_t hn = 0; if (pid) { s2a_docs_path(sp, sizeof sp, "games/%s/wire/%016llX/heap_need", gid, (unsigned long long)pid); hn = read_u64(sp);
+            if (!hn) { s2a_docs_path(sp, sizeof sp, "wire/%016llX/heap_need", (unsigned long long)pid); hn = read_u64(sp); } }
+          if (hn > g_heap_learned) g_heap_learned = hn; }
         if (ni > top) top = ni;
         n++;
     }
@@ -837,7 +855,9 @@ uint64_t s2a_window_container_need(const char *bundle, const char *home) {
 }
 static uint64_t need_from_npdm(void) {
     const char *e = getenv("S2A_WIN_NEED_MB");
-    if (e && atoll(e) > 0) { char sp[1024]; if (getenv("S2A_WIN_SPAN_PEAK") && span_path(sp, sizeof sp, 0)) g_span_learned = read_u64(sp); return (uint64_t)atoll(e) << 20; }   // 单测：跨度与学到的跨度都直接给
+    if (e && atoll(e) > 0) { char sp[1024]; if (getenv("S2A_WIN_SPAN_PEAK") && span_path(sp, sizeof sp, 0)) g_span_learned = read_u64(sp);
+        { const char *h = getenv("S2A_WIN_HEAP_NEED"); if (h && *h) g_heap_learned = read_u64(h); }   // 单测：记下的堆也直接给（文件路径）
+        return (uint64_t)atoll(e) << 20; }   // 单测：跨度与学到的跨度都直接给
     char dir[1024] = "";
 #if TARGET_OS_IPHONE
     // iOS：main.npdm 在启动上下文的模块目录（单款兼容 = 可执行文件同目录，同改造前）
@@ -852,6 +872,7 @@ static uint64_t need_from_npdm(void) {
     { uint64_t (*pf)(const char *) = (uint64_t (*)(const char *))dlsym(RTLD_DEFAULT, "s2a_npdm_pid"); char np[1100]; snprintf(np, sizeof np, "%s/main.npdm", dir);
       g_ctor_pid = pf ? pf(np) : 0; }   // 单款：文件后备按它找本款实测峰值 / 死亡标记（mem_peak_path）
     g_span_learned = s2a_window_span_seen(g_ctor_pid);
+    if (g_ctor_pid) { char hp[1024]; s2a_docs_path(hp, sizeof hp, "wire/%016llX/heap_need", (unsigned long long)g_ctor_pid); g_heap_learned = read_u64(hp); }
     return need_dir(dir);
 }
 // 跨度为 0 的红行按事实分（11-05 Minecraft: Story Mode 的 NPDM 是地址空间类型 1，被报成「读不到 main.npdm」）：
@@ -946,6 +967,10 @@ static void vawin_reserve(void) {
         LOG("【黄】地址窗口：本机学到的跨度 %llu MB 不小于这块空洞 %llu MB（旧版把窗口外的远端映射也算进去了），当作没学到、这一局重新学", (unsigned long long)(g_span_learned >> 20), (unsigned long long)(g_fit >> 20));
         g_span_learned = 0; }
     if (!sz && g_fit >= MIN_WIN + HOST_BELOW) { uint64_t below = s2a_window_host_below(g_fit, g_span_learned);
+        { uint64_t b2 = snap_win ? below : s2a_window_host_for_heap(below, g_fit, g_heap_learned);   // 即时存档恢复按快照原样占，不改
+          if (b2 != below) LOG("地址窗口：本款上一局要过 %llu MB 普通堆，原给法窗口只有 %llu MB 装不下——下方留宿主从 %llu MB 压到 %llu MB，窗口 %llu MB",
+              (unsigned long long)(g_heap_learned >> 20), (unsigned long long)((g_fit - below) >> 20), (unsigned long long)(below >> 20), (unsigned long long)(b2 >> 20), (unsigned long long)((g_fit - b2) >> 20));
+          below = b2; }
 #if !TARGET_OS_OSX
         { const char *rec = getenv("S2A_FRAME_REC"); uint64_t A = (1ull << 30) + (2ull << 30);   // 即时存档（1 GB 同下文 CMD_ARENA）：命令记录区 1 GB + 虚拟池区 2 GB 从窗口里让出来，放宿主段最底部（cmd_arena_reserve）
           if (!(rec && *rec) && s2a_snap_mode() && g_fit >= below + A + MIN_WIN) { below += A; g_snap_below = A; } }

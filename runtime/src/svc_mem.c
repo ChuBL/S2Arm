@@ -401,7 +401,9 @@ static uint64_t heap_need_read(uint64_t pid) {
 }
 static int heap_need_note(uint64_t pid, uint64_t size) {   // → 1 = 记下了（比原记录大才写）
     if (size <= heap_need_read(pid)) return 1;
-    char p[1024]; FILE *f = heap_need_path(p, sizeof p, pid) ? fopen(p, "w") : NULL;
+    char p[1024]; if (!heap_need_path(p, sizeof p, pid)) return 0;
+    for (char *c = p + 1; *c; c++) if (*c == '/') { *c = 0; mkdir(p, 0755); *c = '/'; }   // wire/<程序号>/ 这局可能还没建（Mac 复现 D-GYNE：首局就崩，目录还不在，记不下来）
+    FILE *f = fopen(p, "w");
     return f && fprintf(f, "%llu\n", (unsigned long long)size) > 0 && !fclose(f);
 }
 static _Atomic int g_heap_noted;   // 这一局 SetHeapSize 超出堆区、已记下要的堆
@@ -1510,7 +1512,10 @@ static int svc_mem_impl(int num, uint64_t *regs, uint64_t orig) {
         if (size < g_heap_cur && attr_any((uint64_t)g_heap + size, (uint64_t)g_heap + g_heap_cur)) { GMU_UNLOCK(); regs[0] = 0xD401; return 1; }
         // 堆从窗口里长出窗口末尾（乙布局堆区伸出窗口时才会发生）：宿主没有这段地址
         if (size > g_heap_cur && (uint64_t)g_heap + size > s2a_far_floor()) { GMU_UNLOCK(); regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区（与远端影子撞上）"); return 1; }
-        if (size > g_heap_cur && (uint64_t)g_heap >= L.win_base && (uint64_t)g_heap + size > L.win_base + L.win_size) { GMU_UNLOCK(); regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区"); return 1; }
+        if (size > g_heap_cur && (uint64_t)g_heap >= L.win_base && (uint64_t)g_heap + size > L.win_base + L.win_size) { GMU_UNLOCK();
+            // 堆超出宿主占到的地址窗口（D-GYNE：4 GB iPad 窗口 3072 MB、开局要 3120 MB 堆）：同样记下要的堆，下一局 vawin 按它把窗口放大（s2a_window_host_for_heap）
+            if (heap_need_note(g_lay_pid, size)) LOG("普通堆 %llu MB 超出地址窗口：已记下本款要的堆，下次起局按它放大窗口", (unsigned long long)(size >> 20));
+            regs[0] = va_short(num, (uint64_t)g_heap + g_heap_cur, size - g_heap_cur, "堆区"); return 1; }
         uint64_t lo = (uint64_t)g_heap + (size < g_heap_cur ? size : g_heap_cur), n = size > g_heap_cur ? size - g_heap_cur : g_heap_cur - size;
 #ifdef __ANDROID__
         int growing = size > g_heap_cur;
