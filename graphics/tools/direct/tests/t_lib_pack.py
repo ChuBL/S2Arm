@@ -92,6 +92,12 @@ with tempfile.TemporaryDirectory() as t:
     r = pack(d, o, CHAIN)
     check(r.returncode == 1 and '已有 lib.idx' in r.stderr, f'反证：再打一次 → 退出 1、报已有 lib.idx（{r.returncode}）')
 
+# 发布过滤（LibPack.IsLibFile，出库发布时挑进库容器的文件）与打包认法同一份：打包认的键文件发布也认（含新加的 _bme、直通几何 _bgs / _bgc），
+#   批库 u<16 位>.metallib 认，安卓 _b.spv、源码 _b.metal、变体自带的 _se.json 不认。期望手写；反证：原先手写的第二份表不含 bme → 第二个是 0（11-17 #770 天眼包种类 53 为 0）
+names = [f'{K1}_b.metallib', f'{K1}_bme.metallib', f'{K1}_bgs3.json', f'{K1}_bgc.metallib', 'u0123456789abcdef.metallib', f'{K1}_b.spv', f'{K1}_b.metal', f'{K1}_se.json']
+r = subprocess.run([*CMD, '--libpack', 'is-lib-file', *names], capture_output=True, text=True)
+check(r.returncode == 0 and r.stdout.split() == ['1', '1', '1', '1', '1', '0', '0', '0'], f'发布过滤认法 = 打包认法：{dict(zip(names, r.stdout.split()))}')
+
 with tempfile.TemporaryDirectory() as t:   # 种类 53：#770 任务 / 网格着色器带 S2A_MESH_EMU 预编的宿主入口库 <键>_bme.metallib（Build.cs MeshEmuBuild）
     d = os.path.join(t, 'src'); os.makedirs(d)
     open(os.path.join(d, f'{K1}_b.json'), 'w').write('{}'); open(os.path.join(d, f'{K1}_bme.metallib'), 'wb').write(b'bme lib bytes')

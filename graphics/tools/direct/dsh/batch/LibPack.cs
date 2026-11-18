@@ -114,9 +114,11 @@ static partial class LibPack
 
     // ---------------- lib_swap.py ----------------
     static readonly Regex KEY = new(@"\A([0-9a-f]{16})_b\.(metal|metallib|json)$", RegexOptions.CultureInvariant);
-    /// <summary>lib_swap.LIBFILE：发布那一侧里属于库容器的文件（键文件 + 批库 u&lt;16 位&gt;.metallib）；含直通几何快路的 _bgs&lt;i&gt; / _bgc（11-06 漏收：Build.cs 编了、PackFiles 认了，发布这道过滤没收，金刚 kong_pt 包种类 64–97 为 0）</summary>
-    static readonly Regex LIBFILE = new(@"\A(?:[0-9a-f]{16}_(?:b\.metallib|b\.json|bf\.metallib|bv\.metallib|ft\.metallib|se\.metallib|b_t[0-2]\.metallib|bg\d+\.(?:metallib|json)|bgv\.(?:metallib|json)|bgs\d+\.(?:metallib|json)|bgc\.(?:metallib|json))|u[0-9a-f]{16}\.metallib)$", RegexOptions.CultureInvariant);
-    public static bool IsLibFile(string name) => LIBFILE.IsMatch(name);
+    /// <summary>lib_swap.LIBFILE：发布那一侧里属于库容器的文件（键文件 + 批库 u&lt;16 位&gt;.metallib）。键文件认法与打包同一份（NAME / Kind，下面）：
+    /// 原先这里另有一份手写的文件名表，新加一种变体就要两处同改，漏一处 = 出库编了、打包认了、发布这道过滤没收，包里那一种为 0
+    /// （11-06 直通几何 _bgs / _bgc；11-17 #770 网格宿主入口 _bme：天眼出库 built 357、包里种类 53 为 0）</summary>
+    static readonly Regex BATCHLIB = new(@"\Au[0-9a-f]{16}\.metallib$", RegexOptions.CultureInvariant);
+    public static bool IsLibFile(string name) { var m = NAME.Match(name); return (m.Success && Kind(m) is int k && k != K_SPV) || BATCHLIB.IsMatch(name); }   // _b.spv 是安卓 Vulkan 库，不进苹果的库容器（同原表）
     public static readonly IReadOnlyDictionary<string, string> Sdk = new Dictionary<string, string> { ["ios"] = "iphoneos", ["mac"] = "macosx" };
 
     static Dictionary<string, HashSet<string>> KeysOf(IEnumerable<string> names)
@@ -204,7 +206,7 @@ static partial class LibPack
         string want = Sdk[plat]; var bad = new List<string>(); int n = 0;
         foreach (var (name, data) in items)
         {
-            if (!name.EndsWith(".json", StringComparison.Ordinal) || !LIBFILE.IsMatch(name)) continue;
+            if (!name.EndsWith(".json", StringComparison.Ordinal) || !IsLibFile(name)) continue;
             string rec;
             using (var d = JsonBytes(data))
             {
@@ -451,7 +453,7 @@ static partial class LibPack
         if (publish == "ios" && ios == null) bad.Add("发布 iOS 库却没编 iOS 那份（DMSH_NO_IOS_LIB）");
         if (!Sdk.ContainsKey(publish)) bad.Add($"S2A_DIRECT_PUBLISH 只认 ios / mac，给了 {publish}");
         var pub = publish == "mac" ? mac : ios;
-        if (bad.Count == 0) bad = SdkCheckItems(Sorted(pub.Keys).Where(n => n.EndsWith(".json", StringComparison.Ordinal) && LIBFILE.IsMatch(n)).Select(n => (n, pub[n])), publish, $"{publish} 库");   // 只核 json：先筛再读（同 SdkCheckItems 循环里的条件；原先连 8 万多个指向批库的 _b.metallib 一起读盘）
+        if (bad.Count == 0) bad = SdkCheckItems(Sorted(pub.Keys).Where(n => n.EndsWith(".json", StringComparison.Ordinal) && IsLibFile(n)).Select(n => (n, pub[n])), publish, $"{publish} 库");   // 只核 json：先筛再读（同 SdkCheckItems 循环里的条件；原先连 8 万多个指向批库的 _b.metallib 一起读盘）
         if (bad.Count > 0) return string.Join("\n", bad.Take(20).Select(b => $"[RED] {b}"));
         log.WriteLine($"[直连库] 发布 {publish} 库：反射全部 -sdk {Sdk[publish]}");
         string top = Path.GetDirectoryName(iosOut);
@@ -570,7 +572,8 @@ static partial class LibPack
             var so2 = Console.OpenStandardOutput(); var sb2 = Utf8Out.GetBytes(ol + "\n"); so2.Write(sb2); so2.Flush();
             return 0;
         }
-        if (argv.Length == 2 && argv[0] == "ident-test") return IdentTest(argv[1]);   // 单测：PackFiles 的 ident 分支（#1331，t_lib_pack_ident.py）
+        if (argv.Length == 2 && argv[0] == "ident-test") return IdentTest(argv[1]);
+        if (argv.Length >= 2 && argv[0] == "is-lib-file") { Console.WriteLine(string.Join(" ", argv[1..].Select(n => IsLibFile(n) ? "1" : "0"))); return 0; }   // 单测：发布过滤认不认这个文件名（t_lib_pack.py）   // 单测：PackFiles 的 ident 分支（#1331，t_lib_pack_ident.py）
         if ((argv.Length == 4 || argv.Length == 5) && argv[0] == "pack")
         {
             var names = Directory.EnumerateFiles(argv[1]).Select(Path.GetFileName).ToList();
