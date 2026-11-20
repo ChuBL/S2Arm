@@ -14,6 +14,9 @@
 //    本次提交余下通道全 STORE（rp_sdx_invalidate，exec 循环每条 op 处判）。
 //  · 事件类型：READ 绘制 / 派发按程序反射读这张贴图；NEED 拷贝任一端 / 整图清除；ATT 绘制时它是当前附件；
 //    CLEAR 整屏清除它是当前附件。首个有效事件决定：READ / NEED / ATT → 要存；CLEAR → 冗余；没有 → 要存。
+// 弱链接登记（tools/weak_link_decl.py，场合 replay = 回放核心宿主单测）：前端 / 编译器的可选件，缺实现走保守分支
+// 弱链接[replay]：nvn_cmd_call_resolve
+// 弱链接[replay]：rp_shader_peek
 #include "rp_exec.h"
 #include "rp_state.h"
 #include "rp_shader.h"
@@ -23,7 +26,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-int nvn_cmd_call_resolve(uint64_t h, uint64_t *to);   // hle_nvn.c（0 照执行，2 跳同设备地址的新录制，<0 跳过）
+int nvn_cmd_call_resolve(uint64_t h, uint64_t *to) __attribute__((weak));   // 弱链接[replay]：hle_nvn.c（0 照执行，2 跳同设备地址的新录制，<0 跳过）；宿主替身不链 → 解不到目标，不走进调用体
 int rp_prog_is(const prog_t *p, uint64_t serial);     // rp_state.c
 void rp_bh_fresh(const p_bind_handles *b, int is_samp);   // rp_state.c：递延绑定把记录里的地址当场取回（原地改写，回放再取同一值）
 
@@ -123,7 +126,7 @@ static void sdx_reads(const struct rp_prog *pg, uint32_t seq, int is_compute) {
         }
     }
 }
-const struct rp_prog *rp_shader_peek(uint64_t ser);   // nvk_shader.c：程序序号 → 已编译的 rp_prog（没编出 = NULL，不触发编译）
+const struct rp_prog *rp_shader_peek(uint64_t ser) __attribute__((weak));   // 弱链接[replay]：nvk_shader.c：程序序号 → 已编译的 rp_prog（没编出 = NULL，不触发编译）；宿主替身不链 → 同「没编出」走保守读
 
 static void sdx_walk(const uint8_t *p, int depth) {
     if (depth > 64) { sdx_abort(4); return; }
@@ -142,7 +145,7 @@ static void sdx_walk(const uint8_t *p, int depth) {
             case OP_END: return;
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
             case OP_CALL: { uint64_t t; memcpy(&t, a, 8);
-                uint64_t to; int ck = nvn_cmd_call_resolve(t, &to); if (ck == 2) { t = to; ck = 0; }   // 与回放同一判定（#768338）
+                uint64_t to; int ck = nvn_cmd_call_resolve ? nvn_cmd_call_resolve(t, &to) : -1; if (ck == 2) { t = to; ck = 0; }   // 与回放同一判定（#768338）；缺实现 = 解不到目标，不走进
                 if (ck < 0) break;
                 sdx_walk((const uint8_t *)(uintptr_t)t, depth + 1); break; }
             case OP_SET_RT: { const p_set_rt *r = set_rt_rec(a, h.size, &g_pp_rt_buf); g_pp_rt = r; g_pp_rtseq = seq;
@@ -172,13 +175,13 @@ static void sdx_walk(const uint8_t *p, int depth) {
             case OP_DRAW: case OP_DRAW_IDX: case OP_MULTI_DRAW: case OP_DISPATCH: {
                 const struct rp_prog *pg = NULL;
                 if (h.op == OP_DISPATCH) {
-                    pg = g_pp_cprog ? rp_shader_peek(g_pp_cprog->serial) : NULL;
+                    pg = g_pp_cprog && rp_shader_peek ? rp_shader_peek(g_pp_cprog->serial) : NULL;
                 } else {
                     // 逐阶段 peek：任一在绑阶段的程序没编译出来，那个阶段读什么判不到 → 全槽读（同 iOS 程序未载的保守分支）。
                     // 细分阶段（3 / 4）的反射 rp_prog 不载：绑了就当读不到，一样全槽读。
                     int miss = 0;
                     for (int st = 0; st < 5; st++) if (g_pp_prog[st]) {
-                        const struct rp_prog *q = rp_shader_peek(g_pp_prog[st]->serial);
+                        const struct rp_prog *q = rp_shader_peek ? rp_shader_peek(g_pp_prog[st]->serial) : NULL;
                         if (!q) { miss = 1; break; }
                         if (!pg) pg = q;   // 任一阶段的程序都能给出整组 ent（编译时全部在绑阶段一起进）
                     }
