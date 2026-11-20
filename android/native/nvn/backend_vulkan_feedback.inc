@@ -101,14 +101,14 @@ static int feedback_make(struct nvn_gpu_cmd_s *c, struct feedback_copy *f) {
     }
     image_barrier(c, s, VK_IMAGE_LAYOUT_GENERAL);
     image_barrier(c, t, VK_IMAGE_LAYOUT_GENERAL);
-    if (c->ntsp && c->tsp[c->ntsp - 1].snap < 255) {   // 通道探针：快照记给正在录的通道
-        c->tsp[c->ntsp - 1].snap++;
-        c->tsp[c->ntsp - 1].snap_kb += (uint32_t)(t->mem_size >> 10);
+    if (c->ntsp < TS_PASS_MAX && c->tsp[c->ntsp].snap < 255) {   // 通道探针：快照记给正在录的通道（ntsp 在 pass_end 才递增）
+        c->tsp[c->ntsp].snap++;
+        c->tsp[c->ntsp].snap_kb += (uint32_t)(t->mem_size >> 10);
         const nvn_gpu_pass_desc *pd = &c->pass_desc;   // 采样视图范围与某附件完全一致 = 同像素读的形态证据（input-attachment 可行性）
         for (uint32_t i = 0; i < pd->ncolor && i < 8; i++) { const struct nvn_gpu_view_s *a = pd->color[i].view;
             if (a && a->tex == v->tex && a->base_level == v->base_level && a->levels == v->levels &&
                 a->base_layer == v->base_layer && a->layers == v->layers && a->format == v->format &&
-                c->tsp[c->ntsp - 1].snapx < 255) { c->tsp[c->ntsp - 1].snapx++; break; } } }
+                c->tsp[c->ntsp].snapx < 255) { c->tsp[c->ntsp].snapx++; break; } } }
     __atomic_fetch_add(&g_fb_snap_frame[0], 1, __ATOMIC_RELAXED);
     __atomic_fetch_add(&g_fb_snap_frame[1], t->mem_size, __ATOMIC_RELAXED);
     nvn_gpu_tex_release(t); // cmd 引用保活到 fence；raw view 在 finish_cmd 中先释放
