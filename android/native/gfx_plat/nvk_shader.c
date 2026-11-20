@@ -927,7 +927,12 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
             if (!(b->is_support || b->stage_idx == st)) continue;
             if (e->prog.nent[st] == RP_PROG_ENT_MAX) { red1("too_many_bindings", ""); e->failed = 1; break; }
             nvn_gpu_layout_ent *le = &e->prog.ent[st][e->prog.nent[st]];
-            if (!layout_ent(b, le)) { char nm[40]; snprintf(nm, sizeof nm, "binding_kind_%d_slot_%d", b->kind, b->slot); red1(nm, b->stage); e->failed = 1; break; }
+            if (!layout_ent(b, le)) {
+                char nm[40], wy[96]; const uint8_t *k = views[st].key ? views[st].key : identity;
+                snprintf(nm, sizeof nm, "binding_kind_%d_slot_%d", b->kind, b->slot);
+                snprintf(wy, sizeof wy, "%s 键 %02x%02x%02x%02x…", b->stage[0] ? b->stage : "?", k[0], k[1], k[2], k[3]);
+                red1(nm, wy); e->failed = 1; break;
+            }
             if ((le->src_kind == NVN_RB_TEXU || le->src_kind == NVN_RB_TBUFU) && !usrc_put(&e->prog, b, le)) { red1("too_many_uniform_handles", b->stage); e->failed = 1; break; }
             if (le->cls == NVN_GPU_RES_TBUF && le->src_kind != NVN_RB_TBUF) { red1("texture_buffer_replay_unsupported", b->stage); e->failed = 1; break; }
             le->stages = b->is_support ? (1u << nst) - 1u : 1u << st;
@@ -1079,7 +1084,18 @@ static int libpack_fetch(const uint8_t identity[32], const uint8_t (*gkeys)[8], 
     if (!g_lp_bad_init) { nvn_hm_init(&g_lp_bad, 32); g_lp_bad_init = 1; }
     struct s2a_libpack *lp = nvn_hm_get(&g_lp_bad, identity) ? NULL : libpack_for_locked(root);
     if (lp) {
-        if (ckey) lrc = s2a_libpack_compute_v1(lp, ckey, (uint32_t)pc->direct_abi, pc->profile_hash, pc->translator_closure, bytes, len, lw, sizeof lw);
+        if (ckey) {
+            // 出库共享内存闸要设备 maxComputeSharedMemorySize 真值：取本局 provider profile（现编同一来源）；
+            //   profile 解不出来按 REJECT 记账，不猜上限放行。
+            struct nvk_compute_profile_facts pf; char pw[160] = "";
+            if (nvk_compute_profile_parse(pc, &pf, pw, sizeof pw)) {
+                snprintf(lw, sizeof lw, "compute profile: %s", pw[0] ? pw : "invalid");
+                lrc = S2A_LIBPACK_REJECT;
+            } else {
+                lrc = s2a_libpack_compute_v1(lp, ckey, (uint32_t)pc->direct_abi, pc->profile_hash,
+                                             pc->translator_closure, pf.max_shared, bytes, len, lw, sizeof lw);
+            }
+        }
         else {
             uint8_t keys[6][8]; memset(keys, 0, sizeof keys);
             for (int st = 0; st < (stages == 0x7u ? 3 : 2); st++) memcpy(keys[st], gkeys[st], 8);
@@ -1833,7 +1849,10 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
     memset(&cp, 0, sizeof cp);
     int parsed = nvn_vk_program_parse_compute(bytes, len, &cp, why, sizeof why);
     if (parsed) {
-        if (parsed == NVK_PROGRAM_ARRAY_UNSUPPORTED) array_unsupported(why); else red1("compute_program_parse_failed", why);
+        if (parsed == NVK_PROGRAM_ARRAY_UNSUPPORTED) array_unsupported(why);
+        else { const uint8_t *k = src && src->key ? src->key : identity;
+               char wy[288]; snprintf(wy, sizeof wy, "%s（键 %02x%02x%02x%02x…）", why, k[0], k[1], k[2], k[3]);
+               red1("compute_program_parse_failed", wy); }
         e->failed = 1; return e;
     }
     e->prog.support_bytes = cp.support_bytes; e->prog.spill_bytes = cp.spill_bytes;
@@ -1858,7 +1877,10 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
                 }
             }
         } else ok = layout_ent(b, le);
-        if (!ok) { char nm[56]; snprintf(nm, sizeof nm, "compute_binding_kind_%d_slot_%d_map_%d", b->kind, b->slot, b->kind == 1 ? (int)cp.storage[i].mapping : 0); red1(nm, "cs"); e->failed = 1; break; }
+        if (!ok) { char nm[56], wy[80]; const uint8_t *k = src && src->key ? src->key : identity;
+            snprintf(nm, sizeof nm, "compute_binding_kind_%d_slot_%d_map_%d", b->kind, b->slot, b->kind == 1 ? (int)cp.storage[i].mapping : 0);
+            snprintf(wy, sizeof wy, "cs 键 %02x%02x%02x%02x…", k[0], k[1], k[2], k[3]);
+            red1(nm, wy); e->failed = 1; break; }
         if (le->cls == NVN_GPU_RES_TBUF && le->src_kind != NVN_RB_TBUF) { red1("texture_buffer_replay_unsupported", "cs"); e->failed = 1; break; }
         le->stages = 1u << NVN_GPU_SH_CS;
         if (b->kind == 2 || b->kind == 3) sampled_decl(cp.stage.spirv, cp.stage.spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,   // 3 = 存储图像：数值类与声明格式给回放选视图格式
