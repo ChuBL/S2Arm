@@ -296,6 +296,8 @@ s2a_gate_step "$PY" "$android_dir/tests/direct_prepare_test.py"
 s2a_gate_step "$PY" "$android_dir/tests/host_link_test.py"   # 宿主单测链接闭包：自动补链 / 弱引用放行 / 无提供方点名红 / 替身优先
 # 新回放层：真实图形/计算请求生产入口的贴图池容量、超限与调试读数。
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py"
+# 三项未接能力计数（int16 / int64 / 几何写视口号，#1774②）：depth_clip_cap 进程内定死一次，libpack 用例在上面那步构建出的二进制上单独起一个进程
+s2a_gate_step "$repo_dir/build/nvk-shader-pool-test/test" --reject-count
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --withdraw
 # 几何着色器走出包预编库的负对照（正例在上面无参那一步里单独起进程跑）：撤掉接线各一处，--gs-libpack 必红
 s2a_gate_step "$PY" "$android_dir/tests/nvk_shader_pool_test.py" --gs-libpack-mutants

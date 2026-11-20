@@ -154,8 +154,21 @@ static unsigned g_reject_lines, g_img_reject_lines, g_reject_total, g_img_reject
 static void sha256(const void *p, size_t n, uint8_t out[32]) { s2a_sha256 c; s2a_sha256_init(&c); s2a_sha256_update(&c, p, n); s2a_sha256_final(&c, out); }
 static void red1(const char *name, const char *why) { if (nvn_unimpl("shader", name, NULL) == 1) nvn_plat_log(NVN_PLAT_LOG_RED, "shader", why); }
 // 后端拒装着色器时记哪一项（#1340）：设备没 shaderInt16、模块又声明了 Int16 的，具名 int16_not_supported（只拒这个程序，不整局停）；其余照旧。
+// int16 首行带阶段键（#1774②）：本项按名累计程序数、首条红行留首个程序键，供普查统计；拒收语义不变。
 static void red_load(nvn_gpu_rc rc, const nvn_gpu_shader_src *src, const char *fallback, const char *why) {
-    red1(rc.code == NVN_GPU_E_UNSUPPORTED && s2a_spirv_declares_cap(src->blob, src->bytes, 22) == 1 ? "int16_not_supported" : fallback, why);
+    if (rc.code == NVN_GPU_E_UNSUPPORTED && s2a_spirv_declares_cap(src->blob, src->bytes, 22) == 1) {
+        char b[320];
+        snprintf(b, sizeof b, "%s（键 %02x%02x%02x%02x%02x%02x%02x%02x）", why,
+                 src->key[0], src->key[1], src->key[2], src->key[3], src->key[4], src->key[5], src->key[6], src->key[7]);
+        red1("int16_not_supported", b);
+    } else red1(fallback, why);
+}
+// 预编库拒收文本 → 未接名（#1774② 三项之二）：libpack_vk.c 的 lp_fail 文本里已带程序键 khex。
+static const char *lp_reject_name(const char *why) {
+    if (!why) return NULL;
+    if (strstr(why, "int64_type_used") || strstr(why, "int64_atomics_used")) return "int64_not_supported";
+    if (strstr(why, "writes a viewport")) return "geometry_viewport_write";
+    return NULL;
 }
 // 不需要 _GNU_SOURCE 的 strdup：快照要活过后台线程，profile 原文 / closure / profileHash 必须各存一份。
 static char *dup_str(const char *s) {
@@ -413,6 +426,8 @@ static void compiler_rejected(const char *summary, const struct work_snap *snap)
                 snprintf(reason, sizeof reason, "cbuf_handle_unsupported");
             else if (!strcmp(code, "UNSUPPORTED_PROGRAM") && strstr(message, "separate sampler slot is not implemented"))
                 snprintf(reason, sizeof reason, "separate_sampler_unsupported");
+            else if (!strcmp(code, "UNSUPPORTED_PROGRAM") && strstr(message, "viewport arrays are not implemented"))
+                snprintf(reason, sizeof reason, "geometry_viewport_write");   // #1774②：几何程序写视口号（现编路径）
             else if (!strcmp(code, "MISSING_FACT")) {
                 snprintf(reason, sizeof reason, "MISSING_FACT.unclassified");
                 size_t method = strspn(message, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_");
@@ -942,6 +957,7 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
         nvn_gpu_layout L = {0}; L.ent = e->prog.ent[st]; L.nent = e->prog.nent[st]; L.support_bytes = fp.support_bytes; L.id_src = "s2a-direct-program-v1";
         nvn_gpu_shader_src src = {0}; src.stage = (nvn_gpu_stage)st; src.kind = NVN_GPU_BLOB_SPIRV;
         src.blob = fp.stage[st].spirv; src.bytes = fp.stage[st].spirv_bytes; src.entry = "main"; src.layout = &L;
+        if (views[st].key) memcpy(src.key, views[st].key, 8);   // 阶段键：装填报红的程序身份（int16_not_supported 首行带它）
         nvn_gpu_err err = {0};
         nvn_gpu_rc lr = nvn_gpu_shader_load(&src, &e->prog.sh[st], &err);
         if (!nvn_gpu_ok(lr)) { red_load(lr, &src, "shader_load_failed", err.why); e->failed = 1; }
@@ -1090,6 +1106,10 @@ static int libpack_fetch(const uint8_t identity[32], const uint8_t (*gkeys)[8], 
     pthread_mutex_unlock(&g_lp_mu);
     if (!lp) return 0;
     if (lrc != S2A_LIBPACK_HIT) {   // 没找到 / 容器里这一键坏：前几条把原因打出来（键 = 每阶段 8 字节控制键）
+        if (lrc == S2A_LIBPACK_REJECT) {   // #1774②：三项未接能力按名入未接清单——程序数累计 + 首行红带首个键（lw 已含 khex）；具名拒照旧
+            const char *un = lp_reject_name(lw);
+            if (un) red1(un, lw);
+        }
         static _Atomic int nm; if (atomic_fetch_add(&nm, 1) < 6) {
             const uint8_t *k = ckey ? ckey : gkeys[0];
             char b[400]; snprintf(b, sizeof b, "出包预编库没取到%s（%s，键 %02x%02x%02x%02x…）：%s", ckey ? "计算程序" : "",
@@ -1160,6 +1180,11 @@ static void reject_context(const struct work_snap *s, const char *reason, const 
         g_reject_lines++;
         snprintf(line, sizeof line, "texture_pool_reject_program reason=%.79s stages=%d key=%s", reason, s->nst, key);
         nvn_plat_log(NVN_PLAT_LOG_INFO, "shader", line);
+    }
+    // #1774②：几何程序写视口号（现编路径）入未接清单——程序数按名累计、首条红行带首个程序键；具名拒照旧
+    if (!strcmp(reason, "geometry_viewport_write")) {
+        snprintf(line, sizeof line, "几何程序写视口号：现编拒收（键 %s）", key);
+        red1("geometry_viewport_write", line);
     }
     const char *img = strstr(message, "[kind=image ");
     if (!img || strcmp(reason, "cbuf_handle_unsupported")) return;
