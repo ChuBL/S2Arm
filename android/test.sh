@@ -72,6 +72,8 @@ s2a_gate_step bash "$android_dir/tools/nvn_vk_program_binding_cap.sh"
 s2a_gate_step bash "$android_dir/tools/vk_poolahb_alias_test.sh"
 # 直连逐帧帧时间（宿主，确定性）：环形语义、丢弃/计数可见、分片转储字节级核回。
 s2a_gate_step bash "$android_dir/tools/nvn_vk_frame_log_test.sh"
+# 逐帧时间探针（宿主，确定性）：帧归属 / acquire-present-submit 精确起止 / 转储核回 / 开销实测。
+s2a_gate_step bash "$android_dir/tools/nvn_ft_probe_test.sh"
 # WSI actual-present diagnostics: NDK declarations, partial batches and generation isolation.
 s2a_gate_step bash "$android_dir/tests/nvk_shown_timing_test.sh"
 # 设备 / 实例扩展查询：枚举失败（能力未知、报红）与确实不支持分开；VK_INCOMPLETE 重取。

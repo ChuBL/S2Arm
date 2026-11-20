@@ -273,6 +273,7 @@ struct nvn_gpu_cmd_s {
     uint64_t *refseen;               // 本段已引用句柄的备忘（#1194）：直接映射，槽里 = 句柄指针 | 类型；第一次引用时懒分配，随段释放
     uint64_t refseen_epoch;          // 备忘建表（或上次清空）时的 g_rel_epoch；与现在不一致就整表作废
     uint32_t refseen_hits;           // 本段备忘命中的次数（只给宿主用例读：nvn_gpu_vk_test_cmd_refseen_hits）
+    uint64_t ft_dec_b;               // 探针：本 cmd 的 nvn_gpu_cmd_begin 入口戳（提交时带走作 dec_b）
     struct vk_staging *staging;
     uint32_t nstaging, scap;
     struct nvn_gpu_buf_s *arena;
@@ -551,6 +552,18 @@ static uint64_t now_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
+
+// 逐帧时间探针（android/native/nvn/nvn_ft_probe.c，debug.s2a.ft_probe，缺省关；不进 main 的探针头）：
+//   统一 CLOCK_MONOTONIC，记 acquire / 每次 vkQueueSubmit / vkQueuePresentKHR 的精确起止与段键。
+//   弱引用同帧日志：只链后端的宿主夹具没有探针，地址为空就跳过（ft_on_ 先判指针再调）。
+int  s2a_ft_on(void) __attribute__((weak));
+void s2a_ft_acquire(uint64_t b, uint64_t e, int32_t rc) __attribute__((weak));
+void s2a_ft_submit(uint64_t seg_b, uint64_t sub_b, uint64_t sub_e, uint64_t key, uint64_t dec_b) __attribute__((weak));
+void s2a_ft_seg_end(uint64_t seg_e) __attribute__((weak));
+void s2a_ft_present(uint64_t ticket, uint64_t pre_b, uint64_t pre_e, int32_t rc, uint32_t timing_id) __attribute__((weak));
+void s2a_ft_present_actual(uint32_t timing_id, uint64_t actual) __attribute__((weak));
+static int ft_on_(void) { return s2a_ft_on && s2a_ft_on(); }
+#define S2A_FT_KEY_PRESENT_ (1ull << 63)   // 同 nvn_ft_probe.h S2A_FT_KEY_PRESENT：呈现内嵌段，低 63 位 wsi_seq
 
 static void deadline_after(struct timespec *ts, uint64_t ns) {
     uint64_t t = add_sat(now_ns(), ns);
@@ -1426,6 +1439,7 @@ static void report_self_calibrate(void) {
         pthread_mutex_lock(&g_submit_mu);
         uint64_t begin = now_ns();
         VkResult r = vkQueueSubmit(g.queue, 1, &si, fence);
+        if (ft_on_()) { uint64_t qb, qe; dq_ft_call_span(&qb, &qe); s2a_ft_submit(begin, qb, qe, 0, 0); }   // 探针：初始化校准提交，key=0 无对应开段
         pthread_mutex_unlock(&g_submit_mu);
         if (r != VK_SUCCESS || vkWaitForFences(g.d, 1, &fence, VK_TRUE, 1000000000ull) != VK_SUCCESS) break;
         uint64_t end = now_ns();
@@ -1753,6 +1767,7 @@ static void finish_cmd(struct nvn_gpu_cmd_s *c, int executed) {
 //   弱引用：只链后端的 vk 夹具没有帧日志，地址为空就不调。
 void nvn_vk_frame_log_gpu_segment(uint64_t gpu_ns) __attribute__((weak));
 void nvn_vk_frame_log_gpu_frame_end(void) __attribute__((weak));
+
 static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
     int failed = s->failed;
     nvn_gpu_rc code = s->rc;
@@ -7691,6 +7706,7 @@ nvn_gpu_rc nvn_gpu_cmd_begin(const nvn_gpu_cmd_desc *d, nvn_gpu_cmd *out, nvn_gp
 
     struct nvn_gpu_cmd_s *c = calloc(1, sizeof *c);
     if (!c) return fail(err, NVN_GPU_E_OOM, "cmd 分配失败");
+    if (ft_on_()) c->ft_dec_b = now_ns();   // 探针：本 cmd 的解码段开工点存进 cmd，提交时按各自 cmd 带走（并存段不互相覆盖）
     memset(c->desc_sets, 0, sizeof c->desc_sets); c->desc_layout = VK_NULL_HANDLE; c->desc_dirty = 0xfu;
     VkCommandPoolCreateInfo pci;
     memset(&pci, 0, sizeof pci);
@@ -7864,6 +7880,7 @@ static uint32_t submit_cbs(struct nvn_gpu_cmd_s *c, VkCommandBuffer cbs[2]) {
 // 否则两个提交线程可能让更大的 signal 先入队，或同时通过 last_signal 检查。
 static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn done, void *user, nvn_gpu_err *err) {
     struct nvn_gpu_cmd_s *c = ch;
+    const uint64_t ft_b = ft_on_() ? now_ns() : 0;   // 探针：commit 入口（含等提交锁）
 
     // 已成功开段便有退休记录；不能在 commit OOM 时丢 done，也不能同步回调越过中途段。
     struct vk_segment *s = &c->segment;
@@ -7939,13 +7956,17 @@ static nvn_gpu_rc commit_impl(nvn_gpu_cmd ch, uint64_t signal, nvn_gpu_done_fn d
             VkCommandBuffer cbs[2];
             si.commandBufferCount = submit_cbs(c, cbs);
             si.pCommandBuffers = cbs;
+            uint64_t ft_qb = ft_b && si.commandBufferCount ? 1 : 0;
             r = si.commandBufferCount ? vkQueueSubmit(g.queue, 1, &si, fence) : VK_ERROR_OUT_OF_HOST_MEMORY;
+            if (ft_qb) { uint64_t qb, qe; dq_ft_call_span(&qb, &qe);   // 探针：vkQueueSubmit 真驱动调用起止（不含包装 drain），key=signal，dec_b 随本段 cmd
+                         s2a_ft_submit(ft_b, qb, qe, signal, c->ft_dec_b); }
             if (r == VK_SUCCESS) {
                 s->fence = fence;
                 s->submitted = 1;
                 s->executed = 1;
                 publish_signal(signal, 0);
                 enqueue_segment(&g, s);   // 此后 cmd 归 worker（finish_cmd 负责摘链）
+                if (ft_qb) s2a_ft_seg_end(now_ns());   // 探针：commit 出口（持锁内补写，下个提交入不了锁前不会改 last_sub）
                 pthread_mutex_unlock(&g_submit_mu);
                 return rc(NVN_GPU_OK);
             }
