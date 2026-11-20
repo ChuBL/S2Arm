@@ -1065,18 +1065,24 @@ def phone_shader_cache(c, gid):
     return str(d) if d and d.is_dir() else ""
 
 
+APPLE_DEVICES_URL = "https://developer.apple.com/account/resources/devices/list"   # 开发者网站的设备列表（登记设备）
+
+
 def devcert_items(c, item, udid):
     """开发者证书模式的清单项（v0.2.4）：替掉 Apple ID / Impactor 两项。问题只提示、不挡（blocking 只给「没出包」）；
     到期 / 权限这类提醒随结果 devcert.warnings 给启动器画黄字。返回体检结果（读不出 → None）"""
     try:
         got = devcert.summary(c, udid=udid)
     except Failure as e:
-        item("devcert", False, "开发者证书可用", str(e))
+        item("devcert", False, "开发者证书可用", str(e), action="devCertSettings")
         return None
-    item("devcert", not got["blocking"], "开发者证书可用", got["blocking"][0]["text"] if got["blocking"] else "")
+    # 按钮落点（11-19：这两项原先不带 action，真实清单上证书项没按钮；落点契约测试用的 id 又是后端产生不了的，一直绿着）：
+    #   证书本身的问题 → 设置页签名身份（导入 / 换证书）；设备不在描述文件里 → 苹果开发者网站的设备页（登记设备、重新生成描述文件）
+    item("devcert", not got["blocking"], "开发者证书可用", got["blocking"][0]["text"] if got["blocking"] else "", action="devCertSettings")
     if udid and not got["allDevices"]:
         item("devcertDevice", got["deviceListed"], "这台 iPhone 在描述文件的设备列表里",
-             "不在列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件，再在出包页重新导入。")
+             "不在列表里：签出来装不上这台。请在开发者网站登记这台设备并重新生成描述文件，再在出包页重新导入。",
+             url=APPLE_DEVICES_URL)
     return got
 
 
@@ -1402,10 +1408,12 @@ def readiness(c):
         return readiness_windows(c, gid)
     items = []
     ipa_path = ""
-    def item(key, ok, title, detail, who="human", waiting=False, note=""):
+    def item(key, ok, title, detail, who="human", waiting=False, note="", action=None, url=None):
         wait = waiting and not ok
         # 等前一步的不给说明，免得 AI 拿去催玩家；好了的项也不带说明，只有 note（好了但值得知道的，如只靠网络连着）照带
-        items.append(dict(id=key, ok=bool(ok), waiting=wait, blocking=key == "package" and not ok, title=title, detail=note if ok else "" if wait else detail, who=who))
+        # action / url：没好的项的按钮落点（11-19 落点契约，动作名单见 launchers/shared/experience.v1.json installActions；同 readiness_windows）
+        items.append(dict(id=key, ok=bool(ok), waiting=wait, blocking=key == "package" and not ok, title=title, detail=note if ok else "" if wait else detail, who=who,
+                          action=None if ok else action, url=None if ok else url))
     import downstream
     scheme = downstream.requested(c, next((g for g in c.catalog()["games"] if g["id"].upper() == gid.upper()), dict(id=gid)))
     if scheme:   # 下游深度方案出的是独立 App（install → downstream.install_ios）：iPhone 版看它自己的出包记录，不看容器件（原先一律报没做好，实际装得上）
@@ -1775,7 +1783,7 @@ def readiness_windows(c, gid):
         ipa_path = phone_ipa_path(c)
         item("package", True, "这款游戏的 iPhone 版已经做好", "")
     except Failure:
-        item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app")
+        item("package", False, "这款游戏的 iPhone 版已经做好", "还没做好：先做 iPhone 版，做好后这里自动打勾。", who="app", action="openExport")   # 按钮落点：这款的出包页（11-19 契约，同 Mac）
     resources = c.r.get("resources")
     use_cert = devcert.active(c)
     st = W.impactor.status(resources=resources)
@@ -2647,6 +2655,10 @@ def _identity_on_phone(c, ph, sha1):
     return False
 
 
+IDENTITY_NOT_HERE = ("这台电脑上没有这个 Apple ID 能交给手机的签名证书，启动器不会为此新建（新建会让 AltStore 或 Side"
+                     "Store 正在用的证书失效）。用 AltStore 或 SideStore 装的 S2Arm：在 AltStore 或 SideStore 的设置里导出签名证书，到手机上 S2Arm 的「签名证书」里导入就行。确实想让启动器新建证书，就点「安装 S2Arm」，它会先告诉你会让哪张证书失效，再由你决定。")
+
+
 def _identity_source(c, ph):
     """这次交给 App 的身份从哪来 → (团队号, 私钥指纹, 取身份的函数, source)；交不了 → None。
     证书签名用户（devcert.active，两端都行）：导入时存的 p12；Windows Apple ID 与 Mac 通用壳 Apple ID（PlumeMacPhone）：plumesign 的 keys/<团队>/key.pem。
@@ -2711,6 +2723,8 @@ def deliver_identity(c, ph, strict=False, force=False):
     try:
         src = _identity_source(c, ph)
         if not src:
+            if strict and hasattr(ph, "W"):   # Apple ID 方式、这台电脑上没有可交的证书：不为此新建（会顶掉玩家 AltStore / SideStore 的证书，11-19 实测），引导手机上导入证书
+                raise Failure(IDENTITY_NOT_HERE, code="identity_unavailable")
             if strict:
                 raise Failure("现在没在用你自己的开发者证书签名，没有要交给 iPhone 的证书：先在设置里导入并选用你的证书。", code="devcert_missing")
             return None
