@@ -474,6 +474,26 @@ static uint64_t g_feedback_stats[3]; // nvk_gputime：只读采样 draw / 快照
 static uint64_t g_fb_snap_frame[2];  // 本帧反馈快照 次数 / 字节（feedback_make 累加，上屏段完成时取走清零）
 static uint64_t g_draw_log_ns = 5000000000ull;         // 逐笔读数（nvn_gpu_draw 末尾）的周期，缺省 5 秒；测试钩子 nvn_gpu_vk_test_diag_timing 可缩短
 static void draw_tm_init(void) { if (!g_draw_tm) g_draw_tm = nvn_plat_flag("nvk_gputime", 0) != 0; }   // 与 GPU 时间戳同一个开关
+
+// 着色器阶段键：上游给了就用（离线可对照程序表），否则取 blob 的 FNV-1a（离线可用 .spv 原文复算）。0 = 未知
+static uint64_t blob_key64(const nvn_gpu_shader_src *s) {
+    uint64_t k = 0; memcpy(&k, s->key, 8);
+    if (k) return k;
+    const uint8_t *p = s->blob;
+    if (!p) return 0;
+    uint64_t h = 14695981039346656037ull;
+    for (size_t i = 0; i < s->bytes; i++) { h ^= p[i]; h *= 1099511628211ull; }
+    return h ? h : 1;   // 全零 blob 保底非零
+}
+// 探针去重（宿主可直接测）：新键入表返回 1；已见或表满返回 0，表满时 ovf 只计数。
+// 并发安全：槽位原子申领（shader_load 走任意线程），越界槽只计入 ovf；扫描上界钳到 cap 防撕裂读越界。
+int nvn_vk_probe_seen2(uint64_t (*t)[2], int cap, int *n, int *ovf, uint64_t k1, uint64_t k2) {
+    int m = *n; if (m > cap) m = cap;
+    for (int i = 0; i < m; i++) if (t[i][0] == k1 && t[i][1] == k2) return 0;
+    int i = __atomic_fetch_add(n, 1, __ATOMIC_RELAXED);
+    if (i >= cap) { if (ovf) __atomic_fetch_add(ovf, 1, __ATOMIC_RELAXED); return 0; }
+    t[i][0] = k1; t[i][1] = k2; return 1;
+}
 // 回放线程取 g_mu（nvk_gputime 开着才计）：先 trylock，没拿到的记「真等了几次、等了多久」。持 g_mu 的别的线程（游戏工作线程销毁视图、
 // 完成线程摘段）会把回放线程挡在这里；回放耗时里有多少是在这儿干等，看这一项。只用在回放线程独占的录制路径上（cmd_ref_at / 附件视图 / 建视图）。
 static uint64_t g_gmu_n, g_gmu_wait_n, g_gmu_wait_ns;
@@ -665,6 +685,7 @@ struct upg_res {
 static struct upg_res *g_upg_pend;   // g_mu：等下一次提交录拷贝的重建记录
 static uint64_t g_upg_n;             // 会话累计重建次数（读数：nvn_vk_tex_upgraded）
 uint64_t nvn_vk_tex_upgraded(void) { return g_upg_n; }
+uint64_t nvn_vk_shader_key(nvn_gpu_shader s) { return s ? ((const struct nvn_gpu_shader_s *)s)->key : 0; }   // 测试钩子：阶段键（上游 key 或 blob FNV-1a），0 = 未知
 // 按需重建总开关（nvk_view_upg，缺省开）：0 = 退回「建图即 MUTABLE」的老路，供 A/B 对照。
 static int view_upg_on(void) { static int on = -1; static uint32_t n; if (on < 0 || !(++n & 255)) on = nvn_plat_flag("nvk_view_upg", 1) != 0; return on; }
 // 段写标记：这张贴图被「还没提交的段」录过写操作就拒绝重建——重建拷贝录在该段 init_cb、先于段主体执行，
@@ -1899,13 +1920,15 @@ static void process_segment(struct nvn_gpu_vk *vk, struct vk_segment *s) {
                                 if (best != r) { __typeof__(bk[0]) t = bk[r]; bk[r] = bk[best]; bk[best] = t; }
                                 o += (size_t)snprintf(l2 + o, sizeof l2 - o, "%s%ux%u：%u 个（带深度 %u、0–1 笔 %u 个耗 %.0f）%u 笔 %.0f 毫秒", r ? "；" : "", bk[r].key >> 16, bk[r].key & 0xffff, bk[r].n, bk[r].ds, bk[r].n1, (double)bk[r].ns1 / 1e6, bk[r].draws, (double)bk[r].ns / 1e6); if (o >= sizeof l2) break; }
                             char l3[800]; snprintf(l3, sizeof l3, "GPU 时间（按通道尺寸，同样这 400 段）：%s", l2); nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", l3); nbk = 0;
-                            {   // top-20 逐通道：尺寸/色0+色1+深格式/笔数/顶点数/L-S 掩码/快照×N+同域(KB)/FS 键/通道体+读同步 毫秒
-                                char l4[2000]; size_t o4 = (size_t)snprintf(l4, sizeof l4, "通道探针 top%u（同样这 400 段）", ntop);
-                                for (int r = 0; r < ntop && o4 < sizeof l4; r++)
+                            {   // top-20 逐通道：尺寸/色0+色1+深格式/笔数/顶点数/L-S 掩码/快照×N+同域(KB)/FS 键/通道体+读同步 毫秒；每 6 条一行防 logcat 截断
+                                char l4[900]; size_t o4 = (size_t)snprintf(l4, sizeof l4, "通道探针 top%u（同样这 400 段）", ntop);
+                                for (int r = 0; r < ntop; r++) {
+                                    if (r && r % 6 == 0) { nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", l4); o4 = (size_t)snprintf(l4, sizeof l4, "通道探针 top%u（续 %u）", ntop, r); }
                                     o4 += (size_t)snprintf(l4 + o4, sizeof l4 - o4, "｜%ux%u %u+%u/%u %u笔%u顶 L%02x S%02x 快%u+%ux(%uK) fs%llx %.1f+%.1f",
                                         top[r].w, top[r].h, top[r].cfmt, top[r].cfmt1, top[r].dfmt, top[r].draws, top[r].verts,
                                         top[r].ldm, top[r].stm, top[r].snap, top[r].snapx, top[r].snap_kb,
                                         (unsigned long long)top[r].fsh, (double)top[r].ns / 1e6, (double)top[r].nst / 1e6);
+                                }
                                 nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", l4); ntop = 0; } }
                     }
                     if (n == 400) { char line[300]; snprintf(line, sizeof line, "GPU 时间：%llu 段，段内首尾平均 %.2f 毫秒、最长 %.2f 毫秒；这些段前后共 %.0f 毫秒，其中 GPU 在段内 %.0f 毫秒、段与段之间空着 %.0f 毫秒",
@@ -3301,13 +3324,10 @@ nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out,
     struct nvn_gpu_shader_s *sh = calloc(1, sizeof *sh);
     if (!sh) return fail(err, NVN_GPU_E_OOM, "着色器结构分配失败");
     sh->stage = s->stage;
-    memcpy(&sh->key, s->key, 8);
-    if (g_draw_tm) {   // 通道探针：逐着色器 SPIR-V 统计（每个 key 只打一次）
-        static uint64_t seen[64]; static int nseen;
-        int known = 0;
-        for (int i = 0; i < nseen; i++) if (seen[i] == sh->key) { known = 1; break; }
-        if (!known) {
-            if (nseen < 64) seen[nseen++] = sh->key;
+    sh->key = blob_key64(s);
+    if (g_draw_tm) {   // 通道探针：逐着色器 SPIR-V 统计（每个 key 只打一次；表满只计数不再打）
+        static uint64_t seen[64][2]; static int nseen, ovf;
+        if (nvn_vk_probe_seen2(seen, 64, &nseen, &ovf, sh->key, (uint64_t)s->stage)) {
             const uint32_t *w = s->blob; uint32_t nw = (uint32_t)(s->bytes >> 2);
             uint32_t samp = 0, rw = 0, loop = 0, br = 0, f16 = 0, f32 = 0;
             for (uint32_t i = 5; i < nw;) {   // 跳过 5 词头
@@ -3324,7 +3344,7 @@ nvn_gpu_rc nvn_gpu_shader_load(const nvn_gpu_shader_src *s, nvn_gpu_shader *out,
             snprintf(l6, sizeof l6, "着色器 %016llx stage=%d 词=%u 采样=%u 存读=%u 环=%u 支=%u f16=%u f32=%u",
                      (unsigned long long)sh->key, (int)s->stage, nw, samp, rw, loop, br, f16, f32);
             nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", l6);
-        }
+        } else if (ovf == 1) nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", "着色器统计去重表已满 64，后续键只计数不再打");
     }
     snprintf(sh->entry, sizeof sh->entry, "%s", s->entry && s->entry[0] ? s->entry : "main");
     if (s->layout) {
@@ -5609,19 +5629,18 @@ static int write_binds(struct nvn_gpu_cmd_s *c, const struct nvn_gpu_pipe_s *p, 
             break;
         case NVN_GPU_RES_TEX_SAMP:
             if (!b->u.ts.view || !b->u.ts.samp) { set_sticky(c, NVN_GPU_E_LAYOUT, "TEX_SAMP 绑定缺 view 或 samp"); return -1; }
-            if (g_draw_tm && st == NVN_GPU_SH_FS && b->u.ts.view->tex) {   // 通道探针：逐 (FS 键, 贴图) 打一次采样清单
-                static uint64_t seen[128][2]; static int nseen;
+            if (g_draw_tm && st == NVN_GPU_SH_FS && b->u.ts.view->tex) {   // 通道探针：逐 (FS 键, 贴图) 打一次采样清单；表满只计数不再打
+                static uint64_t seen[512][2]; static int nseen, ovf;
                 const struct nvn_gpu_view_s *v = b->u.ts.view;
                 uint64_t k1 = p->key.st[1].sh ? p->key.st[1].sh->key : 0, k2 = v->tex->access_id;
-                int known = 0;
-                for (int i = 0; i < nseen; i++) if (seen[i][0] == k1 && seen[i][1] == k2) { known = 1; break; }
-                if (!known) { if (nseen < 128) { seen[nseen][0] = k1; seen[nseen][1] = k2; nseen++; }
+                if (nvn_vk_probe_seen2(seen, 512, &nseen, &ovf, k1, k2)) {
                     char l7[200];
                     snprintf(l7, sizeof l7, "采样 fs%016llx：贴图%u fmt=%u %ux%u lv%u+%u %s",
                              (unsigned long long)k1, (unsigned)k2, (unsigned)v->format,
                              (unsigned)v->tex->w, (unsigned)v->tex->h, (unsigned)v->base_level, (unsigned)v->levels,
                              v->tex->samples > 1 ? "MS" : "");
-                    nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", l7); } }
+                    nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", l7);
+                } else if (ovf == 1) nvn_plat_log(NVN_PLAT_LOG_INFO, "gpu", "采样清单去重表已满 512，后续键只计数不再打"); }
             memset(im, 0, sizeof *im);
             im->imageView = feedback_view(c, b->u.ts.view);
             { nvn_fmt_info vfi; int vint = nvn_fmt_info_of(b->u.ts.view->nvn_format, &vfi) && (vfi.kind == NVN_FMT_UINT || vfi.kind == NVN_FMT_SINT);
@@ -5884,7 +5903,7 @@ void nvn_gpu_draw(nvn_gpu_cmd ch, const nvn_gpu_draw_args *a) {
     if (c->tsq && c->ntsp < TS_PASS_MAX) {
         c->tsp[c->ntsp].draws++;
         c->tsp[c->ntsp].verts += a->count;
-        if (c->pipe && c->pipe->key.st[1].sh) c->tsp[c->ntsp].fsh = c->pipe->key.st[1].sh->key;   // 通道探针：FS 阶段键（程序身份）
+        c->tsp[c->ntsp].fsh = (c->pipe && c->pipe->key.st[1].sh) ? c->pipe->key.st[1].sh->key : 0;   // 通道探针：FS 阶段键（程序身份；无 FS 记 0）
     }
     if (a->cnt) {
         if (!(g.caps.caps & NVN_GPU_CAP_INDIRECT_COUNT)) {

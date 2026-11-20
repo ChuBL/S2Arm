@@ -303,6 +303,8 @@ extern void nvn_gpu_vk_test_ref_seen(int on);               // #1194：对照档
 extern void nvn_gpu_vk_test_emit_counts(nvn_gpu_cmd c, uint32_t out[9]);   // #708：管线、视口、裁剪、混合常量、模板、深度偏移、顶点缓冲、索引缓冲、push 各录了几次
 extern void nvn_gpu_vk_test_set_fault(int mode);
 extern void nvn_gpu_vk_test_diag_timing(int on, uint64_t draw_log_ns);   // C207：直接开 / 关诊断计时，并改逐笔读数的周期（0 = 还原 5 秒）
+extern uint64_t nvn_vk_shader_key(nvn_gpu_shader s);          // 通道探针：着色器阶段键（上游 key 或 blob FNV-1a）
+extern int nvn_vk_probe_seen2(uint64_t (*t)[2], int cap, int *n, int *ovf, uint64_t k1, uint64_t k2);   // 通道探针：去重助手
 extern void nvn_gpu_vk_test_fail_fence(uint64_t signal);
 extern void nvn_gpu_vk_test_delay_segment(uint64_t signal, uint32_t ms);
 
@@ -2390,6 +2392,48 @@ static void t22c_view_upgrade_copy(void) {
     CHECK(memcmp(buf_cpu(b), pat, sizeof pat) == 0, "重建后读回内容与上传真值不同（升级拷贝没保内容）");
     nvn_gpu_tex_release(t);
     nvn_gpu_buf_release(b, NULL, NULL);
+}
+
+// 通道探针键（laze②）：s->key 全零的管线路径取 blob FNV-1a——同 blob 同键、异 blob 异键、永不为 0；
+// 探针去重表满后只计数、不再返回新键（修前满表逐次打，9000 探针2 PID 3899 刷出 62357 行采样清单把 logcat 配额打爆）。
+static void t22d_probe_keys(const char *dir) {
+    uint64_t tab[4][2]; int n = 0, ovf = 0;
+    CHECK(nvn_vk_probe_seen2(tab, 4, &n, &ovf, 7, 1) == 1 && n == 1, "新键应入表");
+    CHECK(nvn_vk_probe_seen2(tab, 4, &n, &ovf, 7, 1) == 0 && n == 1, "重键应返 0");
+    for (int i = 1; i < 4; i++) CHECK(nvn_vk_probe_seen2(tab, 4, &n, &ovf, 7, 100 + i) == 1, "新键 %d 应入表", i);
+    CHECK(n == 4, "表应满 4，实为 %d", n);
+    for (int i = 0; i < 300; i++) CHECK(nvn_vk_probe_seen2(tab, 4, &n, &ovf, 9, (uint64_t)i) == 0, "满表后不得再当新键");
+    CHECK(ovf == 300, "满表溢出应计数，实为 %d", ovf);
+
+    char path[512]; size_t vsz = 0, fsz = 0;
+    snprintf(path, sizeof path, "%s/tri.vert.spv", dir); void *vs = read_file(path, &vsz);
+    snprintf(path, sizeof path, "%s/tri.frag.spv", dir); void *fs = read_file(path, &fsz);
+    CHECK(vs && fs, "读不到 SPIR-V（%s）", dir);
+    if (!vs || !fs) { free(vs); free(fs); return; }
+    nvn_gpu_layout_ent ents[2];
+    memset(ents, 0, sizeof ents);
+    ents[0].set = 0; ents[0].cls = NVN_GPU_RES_TEX; ents[0].access = NVN_GPU_ACC_R;
+    ents[0].binding = 0; ents[0].count = 1; ents[0].stages = 1u << NVN_GPU_SH_FS;
+    ents[1].set = 0; ents[1].cls = NVN_GPU_RES_SAMP; ents[1].access = NVN_GPU_ACC_R;
+    ents[1].binding = 1; ents[1].count = 1; ents[1].stages = 1u << NVN_GPU_SH_FS;
+    nvn_gpu_layout fs_layout, vs_layout;
+    memset(&fs_layout, 0, sizeof fs_layout); fs_layout.ent = ents; fs_layout.nent = 2;
+    memset(&vs_layout, 0, sizeof vs_layout);
+    nvn_gpu_shader_src ssrc; memset(&ssrc, 0, sizeof ssrc);   // ssrc.key 全零 = 上游没填阶段键的路径
+    ssrc.stage = NVN_GPU_SH_VS; ssrc.kind = NVN_GPU_BLOB_SPIRV; ssrc.entry = "main";
+    ssrc.blob = vs; ssrc.bytes = vsz; ssrc.layout = &vs_layout;
+    nvn_gpu_shader s1 = NULL, s2 = NULL, s3 = NULL; nvn_gpu_err e; memset(&e, 0, sizeof e);
+    CHECK(OK(nvn_gpu_shader_load(&ssrc, &s1, &e)), "VS 装载1：%d %s", e.rc.code, e.why);
+    CHECK(nvn_vk_shader_key(s1) != 0, "上游 key 全零时阶段键应取 blob 摘要，实为 0");
+    CHECK(OK(nvn_gpu_shader_load(&ssrc, &s2, &e)), "VS 装载2：%d %s", e.rc.code, e.why);
+    CHECK(nvn_vk_shader_key(s2) == nvn_vk_shader_key(s1), "同 blob 应同键");
+    ssrc.stage = NVN_GPU_SH_FS; ssrc.blob = fs; ssrc.bytes = fsz; ssrc.layout = &fs_layout;
+    CHECK(OK(nvn_gpu_shader_load(&ssrc, &s3, &e)), "FS 装载：%d %s", e.rc.code, e.why);
+    CHECK(nvn_vk_shader_key(s3) != 0 && nvn_vk_shader_key(s3) != nvn_vk_shader_key(s1), "异 blob 应异键且非零");
+    if (s1) nvn_gpu_shader_release(s1);
+    if (s2) nvn_gpu_shader_release(s2);
+    if (s3) nvn_gpu_shader_release(s3);
+    free(vs); free(fs);
 }
 
 // C76：单次分配上限必须来自 maxMemoryAllocationSize，不能与 maxStorageBufferRange 共用同一个值。
@@ -11027,6 +11071,9 @@ int main(int argc, char **argv) {
     if (!open_backend()) return 1;
     t22c_view_upgrade_copy();   // t22 留了失败终态，重建 + 拷贝回读放独立会话
     { nvn_gpu_err ec; CHECK(OK(nvn_gpu_close(5000000000ull, &ec)), "t22c close：%d %s", ec.rc.code, ec.why); }
+    if (!open_backend()) return 1;
+    t22d_probe_keys(argv[1]);
+    { nvn_gpu_err ed; CHECK(OK(nvn_gpu_close(5000000000ull, &ed)), "t22d close：%d %s", ed.rc.code, ed.why); }
     if (!open_backend()) return 1;
     t30_rgb8_sampled(argv[1]);
     t28_rgb8_upload();
