@@ -805,11 +805,11 @@ int main(void) {
         snprintf(g_dir, sizeof g_dir, "%s", tmpl);
     }
 
-    // ---- 死绑定出库即拒（#1774：不再产 slot -1 绑定让消费端再拒一遍）----
+    // ---- 死绑定出库即拒（#1774：不再产 slot -1 绑定让消费端再拒一遍）；tex reg 32..39 落图像表同址字 ----
     {
         snprintf(g_dir, sizeof g_dir, "%s/dead", tmpl);
         CHECK(mkdir(g_dir, 0700) == 0, "create dead-binding pack directory");
-        static const char *CS_TEX36 =   // tex reg36：图像表同址区 32..39，放行提交接入前按无映射拒收
+        static const char *CS_TEX36 =   // tex reg36（与图像表同址区 32..39）→ 字 72+2(r−32)=80 → 纹理槽 36
             "{\"key\":\"0101010101010101_b\",\"stage\":\"cs\",\"dm_ctl\":\"0101010101010101\",\"bindings\":["
             "{\"msl_name\":\"cp_t36\",\"kind\":\"tex\",\"reg\":36,\"arg_id\":0}]}";
         static const char *CS_TEX64 =   // tex reg64：c2 无对应字——修前出 wrap 垃圾槽（compute guest slot invalid）
@@ -848,8 +848,19 @@ int main(void) {
             uint8_t k[8]; memcpy(k, &k64, 8);
             uint8_t *j = NULL; size_t jl = 0; char w[192] = "";
             int rc = dl ? s2a_libpack_compute_v1(dl, k, 1, "h", "c", 32768, &j, &jl, w, sizeof w) : -9;
-            if (!(rc == -1 && !j && strstr(w, "no consumable guest source"))) printf("  dead binding %d: rc=%d why=%s\n", i, rc, w);
-            CHECK(rc == -1 && !j && strstr(w, "no consumable guest source"), "dead binding → REJECT with named reason");
+            if (!i) {   // reg36：命中且槽 = 图像表字 80 → 解析出纹理槽 36
+                CHECK(rc == 0 && j && has(j, "\"binding\":5,\"count\":1,\"slot\":80}"),
+                      "tex reg36 → slot 72+2(36-32)=80（图像表同址字，修前是 wrap 垃圾）");
+                static struct nvn_vk_compute_program cp; char pw[192] = "";
+                int prc = j ? nvn_vk_program_parse_compute(j, jl, &cp, pw, sizeof pw) : -9;
+                const struct fd_binding *b5 = NULL;
+                for (int x = 0; !prc && x < cp.binding_count; x++) if (cp.bindings[x].binding == 5) b5 = &cp.bindings[x];
+                CHECK(prc == 0 && b5 && b5->kind == 2 && b5->tex_slot == 36, "解析：slot80 → tex_slot 36");
+                if (!prc) nvn_vk_program_free_compute(&cp);
+            } else {
+                if (!(rc == -1 && !j && strstr(w, "no consumable guest source"))) printf("  dead binding %d: rc=%d why=%s\n", i, rc, w);
+                CHECK(rc == -1 && !j && strstr(w, "no consumable guest source"), "dead binding → REJECT with named reason");
+            }
             free(j);
         }
         s2a_libpack_close(dl);
