@@ -165,6 +165,10 @@ int rp_fr_perf_on(void);   // 开关（nvk_hitch_log，进程内缓存一次，�
 void rp_fr_perf_take(uint64_t out[RP_FR_N]);   // [上屏] 取走本帧分项并清零；每帧只调一次（与 rp_frame_take 同一个帧边界）
 int rp_hitch_line(char *b, size_t n, uint64_t gap_ns, uint64_t exec_ns, uint64_t draws, uint64_t subs, const uint64_t fr[RP_FR_N]);   // 长帧行（见 rp_exec.c）
 uint64_t rp_sub_serial(void);   // 第几次提交（一次提交内可复用的暂存内容按它判）
+struct rp_prog;
+// 录制侧：记一笔「本段已发射的绘制 / 派发用了哪个程序」（段失败日志打本段末 ≤4 笔的阶段键；
+// rp_draw 在实际落命令前调；线程：[提交]，当前段开着才记）
+void rp_seg_prog_note(const struct rp_prog *p);
 void rp_perf_take(uint64_t out[RP_PERF_N]);
 void rp_draw_reset(void);
 void rp_draw_log_arm(int lines);   // 接下来的 lines 笔绘制（含被跳过的）各出一行日志；0 = 关
