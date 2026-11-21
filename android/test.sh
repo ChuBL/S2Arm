@@ -281,6 +281,11 @@ s2a_gate_step "$out/ts-queue-test"
 s2a_gate_step "${CC:-cc}" -std=gnu11 -Wall -Wextra -Werror -I "$android_dir/native/nvn" \
     "$android_dir/tests/report_ts_test.c" -o "$out/report-ts-test"
 s2a_gate_step "$out/report-ts-test"
+# #1749 M0 设备事实：sys 填充 / 共享快照 / digest / 档案 JSON 落盘（宿主三态口径：dlopen 属性 -1）。
+s2a_gate_step "${CC:-cc}" -std=gnu11 -Wall -Wextra -Werror -I "$android_dir/native/direct" \
+    "$android_dir/tests/dev_facts_test.c" "$android_dir/native/direct/dev_facts.c" \
+    "$android_dir/native/direct/sha256.c" -o "$out/dev-facts-test" -lpthread -ldl
+s2a_gate_step "$out/dev-facts-test"
 # VM 夹具端点核对（宿主源码级，mac 也跑）：svc_*.c 新引用的 core 符号漏登记当场红，不等 Linux 真链
 s2a_gate_step "$PY" "$android_dir/core-link/runtime-tests/vm/check_endpoints.py" --out "$out/vm-endpoints"
 # 宽屏 screen_metrics 的宿主两步（screen-widen-test / widen-loader-test）11-01 挪进合入前层：tests/android_screen_host_test.sh

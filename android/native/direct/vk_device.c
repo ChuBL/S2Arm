@@ -706,6 +706,32 @@ int s2a_vk_device_create(struct s2a_vk_device *out, char *why, size_t why_size) 
     pool.queueFamilyIndex = out->queue_family;
     if (vkCreateCommandPool(out->device, &pool, NULL, &out->command_pool) != VK_SUCCESS)
         return fail(why, why_size, "vkCreateCommandPool failed");
+    {   // M0 设备事实：vk 段进共享快照（dev_facts_vk.c），档案落盘 files/devprofile/，启动打一行【事实】。
+        //   事实采集失败只降档（档案缺 vk 段），不挡设备创建——事实不是设备可用性的判决。
+        extern int s2a_dev_facts_fill_vk(const struct s2a_vk_device *, char *, size_t) __attribute__((weak));
+        if (s2a_dev_facts_fill_vk) {
+            char fwhy[160] = "";
+            if (!s2a_dev_facts_fill_vk(out, fwhy, sizeof fwhy)) {
+                extern int s2a_dev_profile_write(const char *, char *, size_t) __attribute__((weak));
+                extern const char *s2a_android_gpu_driver_files_dir(void) __attribute__((weak));
+                extern const s2a_dev_facts *s2a_dev_facts_get(void) __attribute__((weak));
+                const s2a_dev_facts *ff = s2a_dev_facts_get ? s2a_dev_facts_get() : NULL;
+                const char *dir = s2a_android_gpu_driver_files_dir ? s2a_android_gpu_driver_files_dir() : NULL;
+                char pw[400] = "";
+                const int wrc = s2a_dev_profile_write && dir ? s2a_dev_profile_write(dir, pw, sizeof pw) : -1;
+                fprintf(stderr, "[s2a] 【事实】%s | vk %u.%u | ext %u | cpu %d 核 | kgsl %d adpf %d vsync %d/%d/%d | 采集 %.1f ms | 档案 %s\n",
+                        out->properties.deviceName,
+                        VK_VERSION_MAJOR(out->properties.apiVersion), VK_VERSION_MINOR(out->properties.apiVersion),
+                        ff ? ff->vk.ext_n : 0, ff ? ff->sys.configured_ncpu : 0,
+                        ff ? ff->sys.kgsl_node.v : 0, ff ? ff->sys.adpf_syms.v : 0,
+                        ff ? ff->sys.vsync_api33.v : 0, ff ? ff->sys.vsync_api29.v : 0, ff ? ff->sys.vsync_api24.v : 0,
+                        ff ? (double)ff->facts_ns / 1e6 : 0.0,
+                        wrc == 0 ? pw : "(未落盘)");
+            } else {
+                fprintf(stderr, "[s2a] 【事实】采集失败：%s（档案不落盘）\n", fwhy);
+            }
+        }
+    }
     return 0;
 }
 
