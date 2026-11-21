@@ -886,6 +886,14 @@ enum { HANDLE_TABLE_ENTRIES = 4 + 32 };
 
 // 解析结果字节 + 建后端着色器与绑定布局（提交线程与预热带都会调；nvn_gpu_shader_load 契约允许 [后台]）。
 // identity 是这份程序的内容身份：写进 rp_prog.identity（管线配方 / 清单用它跨会话定位同一份程序）。
+// 具名拒收行带 8 字节程序键（同 rp_S.skey[5]，spill 派发 / 现编日志里的那个键）：
+//   同一份代码的多个身份、不同代码的同类拒绝，才能在日志里逐个对上（身份是 32 字节哈希，键才是游戏代码的名字）
+static void with_program_key(char *out, size_t cap, const char *why, const uint8_t key[8]) {
+    int n = snprintf(out, cap, "%s", why);
+    if (key && n > 0 && (size_t)n < cap)
+        snprintf(out + n, cap - (size_t)n, "（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
+                 key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7]);
+}
 static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_source_entry_view views[3], int nst,
                            const uint8_t identity[32]) {
     struct entry *e = calloc(1, sizeof *e);
@@ -927,7 +935,12 @@ static struct entry *build(const uint8_t *bytes, size_t len, const struct s2a_so
             if (!(b->is_support || b->stage_idx == st)) continue;
             if (e->prog.nent[st] == RP_PROG_ENT_MAX) { red1("too_many_bindings", ""); e->failed = 1; break; }
             nvn_gpu_layout_ent *le = &e->prog.ent[st][e->prog.nent[st]];
-            if (!layout_ent(b, le)) { char nm[40]; snprintf(nm, sizeof nm, "binding_kind_%d_slot_%d", b->kind, b->slot); red1(nm, b->stage); e->failed = 1; break; }
+            if (!layout_ent(b, le)) {
+                char nm[40], wy[96]; const uint8_t *k = views[st].key ? views[st].key : identity;
+                snprintf(nm, sizeof nm, "binding_kind_%d_slot_%d", b->kind, b->slot);
+                with_program_key(wy, sizeof wy, b->stage[0] ? b->stage : "?", k);
+                red1(nm, wy); e->failed = 1; break;
+            }
             if ((le->src_kind == NVN_RB_TEXU || le->src_kind == NVN_RB_TBUFU) && !usrc_put(&e->prog, b, le)) { red1("too_many_uniform_handles", b->stage); e->failed = 1; break; }
             if (le->cls == NVN_GPU_RES_TBUF && le->src_kind != NVN_RB_TBUF) { red1("texture_buffer_replay_unsupported", b->stage); e->failed = 1; break; }
             le->stages = b->is_support ? (1u << nst) - 1u : 1u << st;
@@ -1079,7 +1092,18 @@ static int libpack_fetch(const uint8_t identity[32], const uint8_t (*gkeys)[8], 
     if (!g_lp_bad_init) { nvn_hm_init(&g_lp_bad, 32); g_lp_bad_init = 1; }
     struct s2a_libpack *lp = nvn_hm_get(&g_lp_bad, identity) ? NULL : libpack_for_locked(root);
     if (lp) {
-        if (ckey) lrc = s2a_libpack_compute_v1(lp, ckey, (uint32_t)pc->direct_abi, pc->profile_hash, pc->translator_closure, bytes, len, lw, sizeof lw);
+        if (ckey) {
+            // 出库共享内存闸要设备 maxComputeSharedMemorySize 真值：取本局 provider profile（现编同一来源）；
+            //   profile 解不出来按 REJECT 记账，不猜上限放行。
+            struct nvk_compute_profile_facts pf; char pw[160] = "";
+            if (nvk_compute_profile_parse(pc, &pf, pw, sizeof pw)) {
+                snprintf(lw, sizeof lw, "compute profile: %s", pw[0] ? pw : "invalid");
+                lrc = S2A_LIBPACK_REJECT;
+            } else {
+                lrc = s2a_libpack_compute_v1(lp, ckey, (uint32_t)pc->direct_abi, pc->profile_hash,
+                                             pc->translator_closure, pf.max_shared, bytes, len, lw, sizeof lw);
+            }
+        }
         else {
             uint8_t keys[6][8]; memset(keys, 0, sizeof keys);
             for (int st = 0; st < (stages == 0x7u ? 3 : 2); st++) memcpy(keys[st], gkeys[st], 8);
@@ -1823,14 +1847,6 @@ static int resolve_slow(const struct rp_shader_req *q, const struct rp_prog **ou
 // 输入的构造与身份用旧层留下的零件（nvn_vk_compute_request.c：只做输入，不碰设备），结果解析用 nvn_vk_program_parse_compute。
 // 存储缓冲三种来源：NVN 存储槽（SBUFP）、别名某个用户 UBO 槽的本体（map 2 / UBOP）、
 // 用户 UBO 里 8 字节裸指针（map 3 / UBOA，带字节偏移）。图像、间接派发：记账、取不到。
-// 计算程序的拒绝日志带 8 字节程序键（同 rp_S.skey[5]，spill 派发 / 现编日志里的那个键）：
-//   同一份代码的多个身份、不同代码的同类拒绝，才能在日志里逐个对上（身份是 32 字节哈希，键才是游戏代码的名字）
-static void with_program_key(char *out, size_t cap, const char *why, const uint8_t key[8]) {
-    int n = snprintf(out, cap, "%s", why);
-    if (key && n > 0 && (size_t)n < cap)
-        snprintf(out + n, cap - (size_t)n, "（程序键 %02x%02x%02x%02x%02x%02x%02x%02x）",
-                 key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7]);
-}
 static struct entry *build_compute(const uint8_t *bytes, size_t len, const struct s2a_source_entry_view *src,
                                    const uint8_t identity[32], const uint8_t key[8]) {
     struct entry *e = calloc(1, sizeof *e);
@@ -1867,7 +1883,10 @@ static struct entry *build_compute(const uint8_t *bytes, size_t len, const struc
                 }
             }
         } else ok = layout_ent(b, le);
-        if (!ok) { char nm[56]; snprintf(nm, sizeof nm, "compute_binding_kind_%d_slot_%d_map_%d", b->kind, b->slot, b->kind == 1 ? (int)cp.storage[i].mapping : 0); red1(nm, "cs"); e->failed = 1; break; }
+        if (!ok) { char nm[56], wy[80]; const uint8_t *k = src && src->key ? src->key : identity;
+            snprintf(nm, sizeof nm, "compute_binding_kind_%d_slot_%d_map_%d", b->kind, b->slot, b->kind == 1 ? (int)cp.storage[i].mapping : 0);
+            with_program_key(wy, sizeof wy, "cs", k);
+            red1(nm, wy); e->failed = 1; break; }
         if (le->cls == NVN_GPU_RES_TBUF && le->src_kind != NVN_RB_TBUF) { red1("texture_buffer_replay_unsupported", "cs"); e->failed = 1; break; }
         le->stages = 1u << NVN_GPU_SH_CS;
         if (b->kind == 2 || b->kind == 3) sampled_decl(cp.stage.spirv, cp.stage.spirv_bytes, (uint32_t)b->set, (uint32_t)b->binding,   // 3 = 存储图像：数值类与声明格式给回放选视图格式
