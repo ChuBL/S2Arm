@@ -7984,6 +7984,14 @@
   "en": "Invalid player number."
  },
  {
+  "source": "撤销用的键位快照无效。",
+  "en": "The key mapping snapshot for undo is invalid."
+ },
+ {
+  "source": "所有游戏的默认只有玩家 1 的一份。",
+  "en": "The default for all games applies to player 1 only."
+ },
+ {
   "source": "诊断包请选择应用数据和游戏库以外的位置。",
   "en": "Save the diagnostic package somewhere outside the app data and the library."
  },
